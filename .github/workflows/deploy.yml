@@ -148,7 +148,13 @@ jobs:
           # 새 버전·비밀값이 퍼질 때까지 몇 번 다시 시도
           for i in $(seq 1 12); do
             res="$(curl -sS -X POST "$URL/run?dry=$dry" -H "x-run-secret: $RUN_SECRET" || true)"
-            if echo "$res" | grep -q '"ok":true'; then break; fi
+            if echo "$res" | grep -q '"ok":true'; then
+              # 텔레그램 값을 넣었는데 '꺼짐'이면 새 비밀값이 아직 안 퍼진 것 → 조금 더 기다림
+              if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ] && echo "$res" | grep -q '"telegram":"off"' && [ "$i" -lt 12 ]; then
+                sleep 5; continue
+              fi
+              break
+            fi
             if echo "$res" | grep -q '"error"' && ! echo "$res" | grep -q '설정값'; then break; fi
             sleep 5
           done

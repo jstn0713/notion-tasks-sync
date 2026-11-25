@@ -109,6 +109,7 @@ export default {
     try {
       if (r.ok) await reportSuccess(env, now);
       else await reportFailure(env, r.error ?? "동기화 실패", now);
+      await welcomeOnce(env); // 배포 직후 못 보냈으면 여기서 (한 번만)
     } catch (e) {
       console.error(`텔레그램 알림 처리 중 오류: ${e instanceof Error ? e.name : "unknown"}`);
     }
