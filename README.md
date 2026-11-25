@@ -27,6 +27,17 @@
 | `NOTION_STATE_PAGE_ID` | '동기화 기록' 페이지 ID |
 | `NOTION_TODO_DS_ID` | TO-DO 데이터베이스의 데이터 소스 ID |
 
+## 15분 실행 방식
+
+깃허브 예약 실행(schedule)은 늦어지거나 건너뛰는 일이 잦아서, 외부 알람 서비스(cron-job.org)가
+15분마다 아래 주소로 '실행' 요청을 보냅니다. 깃허브 예약 실행은 예비용으로 남겨 둡니다.
+
+```
+POST https://api.github.com/repos/<owner>/notion-tasks-sync/actions/workflows/sync.yml/dispatches
+Authorization: Bearer <이 저장소 Actions 쓰기 권한만 있는 fine-grained 토큰>
+Body: {"ref":"main","inputs":{"dry_run":"false"}}
+```
+
 ## 수동 실행
 
 Actions 탭 → "Notion ↔ Google Tasks 동기화" → Run workflow.
