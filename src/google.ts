@@ -65,24 +65,28 @@ export class Google implements GoogleApi {
 
   async listTasks(listId: string, completedMin: number): Promise<Map<string, Item>> {
     const out = new Map<string, Item>();
+    // 구글은 completedMin 을 주면 '완료 안 된 항목'까지 빼버려서, 두 번에 나눠 가져온다.
+    // 1) 진행 중 항목 전부 (+ 지워진 진행 중 항목)
+    await this.fetchAll(listId, { showCompleted: "false", showHidden: "false", showDeleted: "true" }, out);
+    // 2) 최근에 완료된 항목만 (오래전에 완료된 항목은 빼서 요청 수 절약)
+    await this.fetchAll(
+      listId,
+      { showCompleted: "true", showHidden: "true", showDeleted: "true", completedMin: new Date(completedMin).toISOString() },
+      out,
+    );
+    return out;
+  }
+
+  private async fetchAll(listId: string, q: Record<string, string>, out: Map<string, Item>): Promise<void> {
     let pageToken: string | undefined;
     do {
       const res = await request<any>(this.f, this.budget, `${API}/lists/${listId}/tasks`, {
         headers: this.h,
-        query: {
-          maxResults: "100",
-          showCompleted: "true",
-          showHidden: "true",
-          showDeleted: "true",
-          // 오래전에 완료된 항목은 빼고 가져온다 (요청 수 절약). 진행 중 항목은 항상 포함된다.
-          completedMin: new Date(completedMin).toISOString(),
-          pageToken,
-        },
+        query: { maxResults: "100", ...q, pageToken },
       });
       for (const t of res?.items ?? []) out.set(t.id, toItem(t));
       pageToken = res?.nextPageToken;
     } while (pageToken);
-    return out;
   }
 
   async getTask(listId: string, id: string): Promise<Item | null> {

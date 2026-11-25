@@ -52,13 +52,16 @@ export interface Counts {
   nUpdate: number;
   nDelete: number;
   deferred: number;
+  gSeen: number;
+  nSeen: number;
 }
 
 export function summary(c: Counts): string {
   return (
     `짝 ${c.linked}개 | 구글: 새로 ${c.gCreate}, 수정 ${c.gUpdate}, 삭제 ${c.gDelete} | ` +
     `Notion: 새로 ${c.nCreate}, 수정 ${c.nUpdate}, 휴지통 ${c.nDelete}` +
-    (c.deferred ? ` | 다음 실행으로 미룸 ${c.deferred}` : "")
+    (c.deferred ? ` | 다음 실행으로 미룸 ${c.deferred}` : "") +
+    ` | 확인한 항목: 구글 ${c.gSeen}·Notion ${c.nSeen}`
   );
 }
 
@@ -100,7 +103,7 @@ export async function syncList(opts: {
 }): Promise<Counts> {
   const { cfg, g, n, budget, gList, dsId, st, now, dryRun } = opts;
   const p = cfg.props;
-  const c: Counts = { linked: 0, gCreate: 0, gUpdate: 0, gDelete: 0, nCreate: 0, nUpdate: 0, nDelete: 0, deferred: 0 };
+  const c: Counts = { linked: 0, gCreate: 0, gUpdate: 0, gDelete: 0, nCreate: 0, nUpdate: 0, nDelete: 0, deferred: 0, gSeen: 0, nSeen: 0 };
   const can = (k: number) => budget.left() - RESERVE >= k;
   const initializedAt = st.initialized_at ? Date.parse(st.initialized_at) : now;
   st.initialized_at ??= iso(initializedAt);
@@ -112,11 +115,13 @@ export async function syncList(opts: {
   const G = await g.listTasks(gList, now - FETCH_WINDOW);
   const N = await n.listPages(dsId, p, now - FETCH_WINDOW);
   const liveG = new Map([...G].filter(([, t]) => !t.gone));
+  c.gSeen = liveG.size;
+  c.nSeen = N.size;
 
   // --- 안전장치: 진행 중인 짝이 있는데 한쪽이 통째로 비어 보이면 멈춤 ---
   const activePairs = Object.values(pairs).filter((pr) => !pr.last?.done).length;
   if (activePairs > 0 && (liveG.size === 0 || N.size === 0)) {
-    throw new SafetyStop("한쪽 목록이 비어 보여서 멈춤 (일시 오류 가능성)");
+    throw new SafetyStop(`한쪽 목록이 비어 보여서 멈춤 (구글 ${liveG.size}개·Notion ${N.size}개 보임)`);
   }
 
   // --- 1) 짝 상태 확인: 한쪽이 안 보이면 지워진 건지, 오래돼서 조회에서 빠진 건지 가린다 ---
@@ -160,7 +165,11 @@ export async function syncList(opts: {
     else delG.push(gid);
   }
   if (delG.length + delN.length > MAX_DELETES_PER_RUN) {
-    throw new SafetyStop(`한 번에 ${delG.length + delN.length}개를 지우려 해서 멈춤 (한도 ${MAX_DELETES_PER_RUN}개)`);
+    throw new SafetyStop(
+      `한 번에 ${delG.length + delN.length}개를 지우려 해서 멈춤 (한도 ${MAX_DELETES_PER_RUN}개) — ` +
+        `구글에서 사라져 보이는 것 ${delN.length}개, Notion에서 사라져 보이는 것 ${delG.length}개 ` +
+        `(구글 ${liveG.size}개·Notion ${N.size}개 보임)`,
+    );
   }
   for (const gid of drop) delete pairs[gid];
 

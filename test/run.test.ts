@@ -22,8 +22,15 @@ function fakeServer() {
     const ok = (j: unknown) => new Response(JSON.stringify(j), { status: 200 });
     if (url.startsWith("https://oauth2.googleapis.com/token")) return ok({ access_token: "at", expires_in: 3600 });
     if (url.includes("/users/@me/lists")) return ok({ items: [{ id: "L1", title: "할 일" }] });
-    if (url.includes("/lists/L1/tasks") && method === "GET")
-      return ok({ items: [{ id: "G1", title: "새 할 일", status: "needsAction", updated: "2026-11-25T09:00:00Z" }] });
+    if (url.includes("/lists/L1/tasks") && method === "GET") {
+      // 실제 구글처럼: completedMin 을 주면 '완료 안 된 항목'은 빠진다
+      const q = new URL(url).searchParams;
+      const active = [{ id: "G1", title: "새 할 일", status: "needsAction", updated: "2026-11-25T09:00:00Z" }];
+      const doneRecent = [{ id: "G9", title: "최근 완료", status: "completed", completed: "2026-11-25T09:30:00Z", updated: "2026-11-25T09:30:00Z" }];
+      if (q.get("completedMin")) return ok({ items: doneRecent });
+      if (q.get("showCompleted") === "false") return ok({ items: active });
+      return ok({ items: [...active, ...doneRecent] });
+    }
     if (url.includes("/lists/L1/tasks") && method === "POST") return ok({ id: "G2" });
     if (url.includes("/blocks/state-page/children") && method === "GET") return ok({ results: [] });
     if (url.includes("/blocks/state-page/children") && method === "PATCH") {
@@ -82,6 +89,42 @@ describe("전체 흐름", () => {
     expect(saved).toBeTruthy();
     expect(saved).not.toContain("새 할 일");
     expect(saved).not.toContain("노션 할 일");
+  });
+
+  it("두 번째 실행: 진행 중 항목이 '사라진 것'으로 오해받지 않음", async () => {
+    const s = fakeServer();
+    const now = Date.parse("2026-11-25T10:00:00Z");
+    const r1 = await runSync(env, false, now, s.f);
+    expect(r1.ok).toBe(true);
+    // 저장된 장부를 다음 실행 때 읽히게 한다
+    const saved = s.saved()!;
+    const s2 = fakeServer();
+    const f2 = (async (input: any, init: any = {}) => {
+      const url = String(input);
+      if (url.includes("/blocks/state-page/children") && (init.method ?? "GET") === "GET")
+        return new Response(JSON.stringify({ results: [{ id: "B1", type: "code", code: { rich_text: [{ plain_text: saved }] } }] }), { status: 200 });
+      if (url.includes("/blocks/B1")) return new Response("{}", { status: 200 });
+      if (url.includes("/data_sources/ds-1/query")) {
+        const res = await s2.f(input, init);
+        const j: any = await res.json();
+        j.results.push({ ...j.results[0], id: "N2", properties: { ...j.results[0].properties, "할 일": { title: [{ plain_text: "새 할 일" }] }, 마감일: { date: null } } });
+        return new Response(JSON.stringify(j), { status: 200 });
+      }
+      if (url.includes("/lists/L1/tasks") && (init.method ?? "GET") === "GET") {
+        const q = new URL(url).searchParams;
+        if (q.get("completedMin")) return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        return new Response(JSON.stringify({ items: [
+          { id: "G1", title: "새 할 일", status: "needsAction", updated: "2026-11-25T09:00:00Z" },
+          { id: "G2", title: "노션 할 일", status: "needsAction", due: "2026-11-30T00:00:00.000Z", updated: "2026-11-25T10:00:00Z" },
+        ] }), { status: 200 });
+      }
+      return s2.f(input, init);
+    }) as typeof fetch;
+    const r2 = await runSync(env, false, now + 5 * 60_000, f2);
+    expect(r2.error).toBeUndefined();
+    expect(r2.lists.todo).toContain("삭제 0");
+    expect(r2.lists.todo).toContain("휴지통 0");
+    expect(r2.lists.todo).toContain("짝 2개");
   });
 
   it("설정값이 없으면 아무것도 안 하고 알려줌", async () => {
