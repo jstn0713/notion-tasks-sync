@@ -1,0 +1,121 @@
+# main 에 올리면(push) 자동으로 Cloudflare 에 배포해요. Actions 탭에서 Run workflow 로 직접 돌려도 돼요.
+#   테스트 → Worker 배포 → 비밀값 등록 → 시험 실행(개수만 출력)
+# 동기화 자체는 Cloudflare 가 5분마다 직접 실행해요. (GitHub 예약 실행은 쓰지 않아요)
+# 로그에는 할 일 내용 없이 개수만 나와요.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "배포 뒤 무엇을 할까요"
+        type: choice
+        default: 시험 실행
+        options:
+          - 시험 실행
+          - 지금 바로 동기화
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+      GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+      GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+      NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+      NOTION_STATE_PAGE_ID: ${{ secrets.NOTION_STATE_PAGE_ID }}
+      NOTION_TODO_DS_ID: ${{ secrets.NOTION_TODO_DS_ID }}
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 설치
+        run: npm ci
+
+      - name: 테스트
+        run: npm run check && npm test
+
+      - name: 비밀값 확인
+        id: ready
+        run: |
+          missing=""
+          for k in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_REFRESH_TOKEN NOTION_TOKEN NOTION_STATE_PAGE_ID NOTION_TODO_DS_ID; do
+            [ -z "${!k}" ] && missing="$missing $k"
+          done
+          if [ -n "$missing" ]; then
+            echo "::warning title=배포 건너뜀::GitHub Secrets 에 아직 없는 값:$missing — 넣은 뒤 Run workflow 를 눌러주세요."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Worker 배포
+        id: deploy
+        if: steps.ready.outputs.ok == 'true'
+        run: |
+          npx wrangler deploy 2>&1 | tee "$RUNNER_TEMP/deploy.log"
+          url="$(grep -oE 'https://[A-Za-z0-9.-]+\.workers\.dev' "$RUNNER_TEMP/deploy.log" | head -1)"
+          if [ -z "$url" ]; then
+            echo "::error title=주소를 못 찾음::배포 주소(workers.dev)를 못 찾았어요."
+            exit 1
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: 비밀값 등록
+        if: steps.ready.outputs.ok == 'true'
+        run: |
+          run_secret="$(printf 'notion-tasks-sync-run:%s' "$NOTION_TOKEN" | sha256sum | cut -c1-48)"
+          echo "::add-mask::$run_secret"
+          echo "RUN_SECRET=$run_secret" >> "$GITHUB_ENV"
+          RUN_SECRET="$run_secret" node -e '
+            const keys = ["GOOGLE_CLIENT_ID","GOOGLE_CLIENT_SECRET","GOOGLE_REFRESH_TOKEN","NOTION_TOKEN","NOTION_STATE_PAGE_ID","NOTION_TODO_DS_ID","RUN_SECRET"];
+            const out = {};
+            for (const k of keys) out[k] = (process.env[k] || "").trim();
+            require("fs").writeFileSync(process.env.RUNNER_TEMP + "/secrets.json", JSON.stringify(out));'
+          npx wrangler secret bulk "$RUNNER_TEMP/secrets.json"
+          rm -f "$RUNNER_TEMP/secrets.json"
+
+      - name: 확인 실행
+        if: steps.ready.outputs.ok == 'true'
+        env:
+          URL: ${{ steps.deploy.outputs.url }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          dry=1
+          [ "$MODE" = "지금 바로 동기화" ] && dry=0
+          # 새 버전·비밀값이 퍼질 때까지 몇 번 다시 시도
+          for i in $(seq 1 12); do
+            res="$(curl -sS -X POST "$URL/run?dry=$dry" -H "x-run-secret: $RUN_SECRET" || true)"
+            if echo "$res" | grep -q '"ok":true'; then break; fi
+            if echo "$res" | grep -q '"error"' && ! echo "$res" | grep -q '설정값'; then break; fi
+            sleep 5
+          done
+          summary="$(printf '%s' "$res" | node -e '
+            let r; try { r = JSON.parse(require("fs").readFileSync(0, "utf8")); } catch { console.log("응답을 읽지 못했어요"); process.exit(0); }
+            const lines = Object.entries(r.lists || {}).map(([k, v]) => k + ": " + v);
+            if (r.error) lines.push(r.error);
+            console.log((r.dry ? "[시험 실행] " : "[동기화] ") + lines.join(" / ") + " (요청 " + r.requests + "개)");')"
+          echo "$summary"
+          if echo "$res" | grep -q '"ok":true'; then
+            echo "::notice title=배포 완료::$summary"
+          else
+            echo "::error title=확인 실행 실패::$summary"
+            exit 1
+          fi

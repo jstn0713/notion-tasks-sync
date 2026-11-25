@@ -1,0 +1,14 @@
+# Cloudflare Worker 설정. 보통은 고칠 일이 없어요.
+name = "notion-tasks-sync"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[triggers]
+# 5분마다 구글 Tasks ↔ Notion 을 맞춰요. (cron 은 계정 전체에서 5개까지: routine-bot, weather-bot 과 합쳐 3개)
+# cron 표현은 UTC 기준이지만 5분 간격이라 시차와 상관없어요.
+crons = ["*/5 * * * *"]
+
+# Cloudflare 대시보드에서 실행 기록(로그)을 볼 수 있게 해요. 로그에는 할 일 내용 없이 개수만 남아요.
+[observability]
+enabled = true
