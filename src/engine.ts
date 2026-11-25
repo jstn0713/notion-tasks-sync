@@ -54,12 +54,20 @@ export interface Counts {
   deferred: number;
   gSeen: number;
   nSeen: number;
+  gFields: Record<string, number>;
+  nFields: Record<string, number>;
 }
+
+const FIELD_KO: Record<string, string> = { title: "제목", notes: "메모", due: "날짜", done: "완료", parent: "하위" };
+const fields = (m: Record<string, number>) => {
+  const parts = Object.entries(m).filter(([, v]) => v > 0).map(([k, v]) => `${FIELD_KO[k] ?? k} ${v}`);
+  return parts.length ? `(${parts.join("·")})` : "";
+};
 
 export function summary(c: Counts): string {
   return (
-    `짝 ${c.linked}개 | 구글: 새로 ${c.gCreate}, 수정 ${c.gUpdate}, 삭제 ${c.gDelete} | ` +
-    `Notion: 새로 ${c.nCreate}, 수정 ${c.nUpdate}, 휴지통 ${c.nDelete}` +
+    `짝 ${c.linked}개 | 구글: 새로 ${c.gCreate}, 수정 ${c.gUpdate}${fields(c.gFields)}, 삭제 ${c.gDelete} | ` +
+    `Notion: 새로 ${c.nCreate}, 수정 ${c.nUpdate}${fields(c.nFields)}, 휴지통 ${c.nDelete}` +
     (c.deferred ? ` | 다음 실행으로 미룸 ${c.deferred}` : "") +
     ` | 확인한 항목: 구글 ${c.gSeen}·Notion ${c.nSeen}`
   );
@@ -103,7 +111,8 @@ export async function syncList(opts: {
 }): Promise<Counts> {
   const { cfg, g, n, budget, gList, dsId, st, now, dryRun } = opts;
   const p = cfg.props;
-  const c: Counts = { linked: 0, gCreate: 0, gUpdate: 0, gDelete: 0, nCreate: 0, nUpdate: 0, nDelete: 0, deferred: 0, gSeen: 0, nSeen: 0 };
+  const c: Counts = { linked: 0, gCreate: 0, gUpdate: 0, gDelete: 0, nCreate: 0, nUpdate: 0, nDelete: 0, deferred: 0, gSeen: 0, nSeen: 0, gFields: {}, nFields: {} };
+  const bump = (m: Record<string, number>, ks: string[]) => ks.forEach((k) => (m[k] = (m[k] ?? 0) + 1));
   const can = (k: number) => budget.left() - RESERVE >= k;
   const initializedAt = st.initialized_at ? Date.parse(st.initialized_at) : now;
   st.initialized_at ??= iso(initializedAt);
@@ -307,6 +316,8 @@ export async function syncList(opts: {
       c.deferred++;
       continue; // 장부를 안 바꿨으니 다음 실행 때 다시 처리
     }
+    bump(c.gFields, [...Object.keys(gPatch), ...(gParent ? ["parent"] : [])]);
+    bump(c.nFields, [...Object.keys(nPatch), ...(nParent ? ["parent"] : [])]);
     if (Object.keys(gPatch).length) {
       c.gUpdate++;
       if (!dryRun) await g.update(gList, gid, gPatch);
