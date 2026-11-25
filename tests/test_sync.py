@@ -258,3 +258,24 @@ def test_quick_capture_done_recently_is_linked(setup):
               updated=T0 + timedelta(minutes=5))
     run(G, N, state, T0 + timedelta(minutes=15))
     assert q in state["pairs"] and N.p[pair_of(state, q)].done
+
+
+def test_state_has_no_task_text(setup):
+    G, N, state, ids = setup
+    import json
+    blob = json.dumps(state, ensure_ascii=False)
+    for word in ("보수교육", "같은제목", "노션메모", "노션에만"):
+        assert word not in blob
+
+
+def test_old_state_format_migrates_without_changes(setup):
+    G, N, state, ids = setup
+    # 예전 형식(내용이 그대로 적힌 장부)으로 되돌려 놓기
+    for gid, pr in state["pairs"].items():
+        g = G.t[gid]
+        pr["last"] = {"title": g.title, "notes": g.notes, "due": g.due,
+                      "done": g.done, "parent": "", "t": pr["last"]["t"]}
+    G.calls = N.calls = 0
+    _, c = run(G, N, state, T0 + timedelta(minutes=15))
+    assert G.calls == 0 and N.calls == 0
+    assert all(p["last"].get("h") == 1 for p in state["pairs"].values())

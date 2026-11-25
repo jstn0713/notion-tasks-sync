@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -68,6 +69,26 @@ def iso(dt: datetime) -> str:
 
 def norm_text(s: str | None) -> str:
     return (s or "").replace("\r\n", "\n").strip()
+
+
+HASHED = ("title", "notes", "due")
+
+
+def fp(f: str, v):
+    """장부에는 내용 대신 지문(해시)만 남긴다. 완료 여부와 부모 ID는 그대로."""
+    if f in HASHED:
+        return hashlib.sha256(str(v).encode()).hexdigest()[:16]
+    return v
+
+
+def migrate_last(last: dict | None) -> dict | None:
+    """예전 장부(내용이 그대로 적힌 형식)를 지문 형식으로 바꾼다."""
+    if last is None or last.get("h"):
+        return last
+    out = {f: fp(f, last.get(f, "")) for f in HASHED}
+    out.update({k: last.get(k) for k in ("done", "parent", "t")})
+    out["h"] = 1
+    return out
 
 
 # ──────────────────────────────────────────────────────────────
@@ -460,7 +481,7 @@ def sync_list(cfg: dict, g_api, n_api, g_list: str, ds_id: str,
     parent_fixes = []
     for gid, pr in pairs.items():
         g, n = live_g[gid], N[pr["nid"]]
-        last = pr.get("last")
+        last = migrate_last(pr.get("last"))
         mode = modes.get(gid, "normal")
         gv = {"title": g.title, "notes": g.notes, "due": g.due, "done": g.done,
               "parent": g.parent_raw if g.parent_raw in pairs else ""}
@@ -487,9 +508,9 @@ def sync_list(cfg: dict, g_api, n_api, g_list: str, ds_id: str,
                     new[f] = a or b
                 else:
                     new[f] = a if g_newer else b
-            elif last is not None and a == last.get(f):
+            elif last is not None and fp(f, a) == last.get(f):
                 new[f] = b                      # Notion 쪽만 바뀜
-            elif last is not None and b == last.get(f):
+            elif last is not None and fp(f, b) == last.get(f):
                 new[f] = a                      # 구글 쪽만 바뀜
             else:
                 new[f] = a if g_newer else b    # 둘 다 바뀜 → 나중에 고친 쪽
@@ -510,9 +531,11 @@ def sync_list(cfg: dict, g_api, n_api, g_list: str, ds_id: str,
             parent_fixes.append((gid, new["parent"], gv["parent"], nv["parent"]))
 
         prev_t = (last or {}).get("t")
+        new_fp = {f: fp(f, new[f]) for f in FIELDS}
         changed = bool(g_patch or n_patch) or last is None or any(
-            (last or {}).get(f) != new[f] for f in FIELDS)
-        pr["last"] = {**new, "t": iso(now) if changed or not prev_t else prev_t}
+            (last or {}).get(f) != new_fp[f] for f in FIELDS)
+        pr["last"] = {**new_fp, "h": 1,
+                      "t": iso(now) if changed or not prev_t else prev_t}
 
     # --- 5) 하위 할 일(부모) 맞추기 ---
     for gid, want, g_cur, n_cur in parent_fixes:
