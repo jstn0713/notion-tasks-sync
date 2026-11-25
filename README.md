@@ -35,6 +35,11 @@ Actions 탭 → **deploy** → **Run workflow** 에서 '지금 바로 동기화'
 | `NOTION_TOKEN` | Notion 개인 액세스 토큰 |
 | `NOTION_STATE_PAGE_ID` | '동기화 기록' 페이지 ID |
 | `NOTION_TODO_DS_ID` | TO-DO 데이터베이스의 데이터 소스 ID |
+| `TELEGRAM_BOT_TOKEN` | (선택) 실패 알림을 보낼 텔레그램 봇 토큰 — routine-bot 과 같은 봇이어도 돼요 |
+| `TELEGRAM_CHAT_ID` | (선택) 알림 받을 채팅방 번호 |
+
+텔레그램 값을 넣으면 실패할 때 알림이 와요. 같은 오류는 하루 한 번만, 다시 정상이 되면 '복구' 알림을 한 번 보내요.
+무엇을 보냈는지는 Cloudflare KV(`notion-tasks-sync-alerts`, 배포 때 자동 생성)에 기억해요.
 
 ## 무료 한도
 

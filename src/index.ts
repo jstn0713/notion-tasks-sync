@@ -8,6 +8,7 @@ import { Google } from "./google";
 import { Notion } from "./notion";
 import { SafetyStop, summary, syncList, type Counts, type ListState } from "./engine";
 import type { ListConfig } from "./types";
+import { reportFailure, reportSuccess, welcomeOnce } from "./alert";
 
 export const LISTS: ListConfig[] = [
   {
@@ -35,6 +36,9 @@ export interface Env {
   NOTION_STATE_PAGE_ID?: string;
   NOTION_TODO_DS_ID?: string;
   RUN_SECRET?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_CHAT_ID?: string;
+  ALERTS?: KVNamespace;
   [k: string]: unknown;
 }
 
@@ -46,6 +50,7 @@ export interface RunResult {
   lists: Record<string, string>;
   error?: string;
   requests: number;
+  telegram?: string;
 }
 
 const clean = (s: unknown) => (typeof s === "string" ? s.trim() : "");
@@ -97,9 +102,16 @@ function logResult(r: RunResult) {
 }
 
 export default {
-  async scheduled(_c: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
-    const r = await runSync(env, false);
+  async scheduled(_c: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
+    const now = Date.now();
+    const r = await runSync(env, false, now);
     logResult(r);
+    try {
+      if (r.ok) await reportSuccess(env, now);
+      else await reportFailure(env, r.error ?? "동기화 실패", now);
+    } catch (e) {
+      console.error(`텔레그램 알림 처리 중 오류: ${e instanceof Error ? e.name : "unknown"}`);
+    }
     if (!r.ok) throw new Error(r.error ?? "동기화 실패"); // Cloudflare 대시보드에 '실패'로 표시
   },
 
@@ -110,6 +122,11 @@ export default {
       if (!secret || req.headers.get("x-run-secret") !== secret) return new Response("forbidden", { status: 403 });
       const r = await runSync(env, url.searchParams.get("dry") === "1");
       logResult(r);
+      try {
+        r.telegram = await welcomeOnce(env);
+      } catch {
+        r.telegram = "failed";
+      }
       return new Response(JSON.stringify(r), { status: r.ok ? 200 : 500, headers: { "content-type": "application/json; charset=utf-8" } });
     }
     return new Response("notion-tasks-sync: 동작 중", { headers: { "content-type": "text/plain; charset=utf-8" } });

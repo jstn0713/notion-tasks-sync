@@ -12,3 +12,9 @@ crons = ["*/5 * * * *"]
 # Cloudflare 대시보드에서 실행 기록(로그)을 볼 수 있게 해요. 로그에는 할 일 내용 없이 개수만 남아요.
 [observability]
 enabled = true
+
+# 텔레그램 실패 알림을 '하루 한 번만' 보내려고 무엇을 보냈는지 기억하는 곳.
+# 배포할 때 GitHub Actions 가 실제 ID 로 바꿔 넣어요. 그대로 두세요.
+[[kv_namespaces]]
+binding = "ALERTS"
+id = "00000000000000000000000000000000"

@@ -37,6 +37,10 @@ jobs:
       NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
       NOTION_STATE_PAGE_ID: ${{ secrets.NOTION_STATE_PAGE_ID }}
       NOTION_TODO_DS_ID: ${{ secrets.NOTION_TODO_DS_ID }}
+      # 텔레그램 실패 알림 (선택). routine-bot 과 같은 봇·같은 채팅방 번호를 써도 돼요.
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      KV_NAME: notion-tasks-sync-alerts
       WRANGLER_SEND_METRICS: "false"
     steps:
       - uses: actions/checkout@v5
@@ -66,6 +70,47 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: 텔레그램 값 확인
+        if: steps.ready.outputs.ok == 'true'
+        run: |
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "::notice title=텔레그램 알림 꺼짐::TELEGRAM_BOT_TOKEN 과 TELEGRAM_CHAT_ID 를 넣으면 실패 알림이 켜져요."
+            exit 0
+          fi
+          token="$(printf '%s' "$TELEGRAM_BOT_TOKEN" | grep -oE '[0-9]+:[A-Za-z0-9_-]+' | head -1 || true)"
+          if [ -z "$token" ]; then
+            echo "::error title=봇 토큰 모양이 이상해요::TELEGRAM_BOT_TOKEN 은 123456789:AAH... 처럼 '숫자:영문' 모양이어야 해요. BotFather 가 보낸 토큰만 복사해서 다시 넣어주세요."
+            exit 1
+          fi
+          res="$(curl -sS -m 20 "https://api.telegram.org/bot$token/getMe" || true)"
+          if ! echo "$res" | grep -q '"ok":true'; then
+            echo "::error title=봇 토큰이 맞지 않아요::텔레그램이 이 토큰을 모른대요. BotFather → /mybots → 봇 선택 → API Token 에서 다시 복사해 주세요."
+            exit 1
+          fi
+
+      - name: 알림 기억 공간(KV) 준비
+        if: steps.ready.outputs.ok == 'true'
+        run: |
+          find_kv() {
+            npx wrangler kv namespace list 2>/dev/null | node -e '
+              const raw = require("fs").readFileSync(0, "utf8");
+              let list = []; try { list = JSON.parse(raw.slice(raw.indexOf("["))); } catch {}
+              const n = process.env.KV_NAME;
+              const kv = list.find((k) => k.title === n) || list.find((k) => (k.title || "").endsWith(n));
+              process.stdout.write(kv ? kv.id : "");'
+          }
+          id="$(find_kv)"
+          if [ -z "$id" ]; then
+            echo "처음이라 KV 를 만들어요."
+            npx wrangler kv namespace create "$KV_NAME" || true
+            id="$(find_kv)"
+          fi
+          if [ -z "$id" ]; then
+            echo "::error title=KV 준비 실패::KV 를 찾지도 만들지도 못했어요. Cloudflare API 토큰에 'Workers KV Storage Edit' 권한이 있는지 확인해 주세요."
+            exit 1
+          fi
+          sed -i "s/00000000000000000000000000000000/$id/" wrangler.toml
+
       - name: Worker 배포
         id: deploy
         if: steps.ready.outputs.ok == 'true'
@@ -85,9 +130,9 @@ jobs:
           echo "::add-mask::$run_secret"
           echo "RUN_SECRET=$run_secret" >> "$GITHUB_ENV"
           RUN_SECRET="$run_secret" node -e '
-            const keys = ["GOOGLE_CLIENT_ID","GOOGLE_CLIENT_SECRET","GOOGLE_REFRESH_TOKEN","NOTION_TOKEN","NOTION_STATE_PAGE_ID","NOTION_TODO_DS_ID","RUN_SECRET"];
+            const keys = ["GOOGLE_CLIENT_ID","GOOGLE_CLIENT_SECRET","GOOGLE_REFRESH_TOKEN","NOTION_TOKEN","NOTION_STATE_PAGE_ID","NOTION_TODO_DS_ID","RUN_SECRET","TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID"];
             const out = {};
-            for (const k of keys) out[k] = (process.env[k] || "").trim();
+            for (const k of keys) { const v = (process.env[k] || "").trim(); if (v) out[k] = v; }
             require("fs").writeFileSync(process.env.RUNNER_TEMP + "/secrets.json", JSON.stringify(out));'
           npx wrangler secret bulk "$RUNNER_TEMP/secrets.json"
           rm -f "$RUNNER_TEMP/secrets.json"
@@ -111,7 +156,8 @@ jobs:
             let r; try { r = JSON.parse(require("fs").readFileSync(0, "utf8")); } catch { console.log("응답을 읽지 못했어요"); process.exit(0); }
             const lines = Object.entries(r.lists || {}).map(([k, v]) => k + ": " + v);
             if (r.error) lines.push(r.error);
-            console.log((r.dry ? "[시험 실행] " : "[동기화] ") + lines.join(" / ") + " (요청 " + r.requests + "개)");')"
+            const tg = { sent: "텔레그램 연결 메시지 보냄", already: "텔레그램 알림 켜짐", off: "텔레그램 알림 꺼짐", failed: "⚠️ 텔레그램 메시지를 못 보냈어요 (TELEGRAM_CHAT_ID 확인)" }[r.telegram] || "";
+            console.log((r.dry ? "[시험 실행] " : "[동기화] ") + lines.join(" / ") + " (요청 " + r.requests + "개)" + (tg ? " · " + tg : ""));')"
           echo "$summary"
           if echo "$res" | grep -q '"ok":true'; then
             echo "::notice title=배포 완료::$summary"
