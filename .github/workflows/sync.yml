@@ -1,0 +1,47 @@
+name: Notion ↔ Google Tasks 동기화
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # 15분마다
+    - cron: "7 3 * * *"      # 하루 한 번: 자동 꺼짐 방지 신호
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "시험 실행 (아무것도 바꾸지 않고 개수만 보기)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: notion-tasks-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 동기화
+        run: python sync.py
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_STATE_PAGE_ID: ${{ secrets.NOTION_STATE_PAGE_ID }}
+          NOTION_TODO_DS_ID: ${{ secrets.NOTION_TODO_DS_ID }}
+      - name: 자동 꺼짐 방지
+        if: github.event.schedule == '7 3 * * *'
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/sync.yml/enable"
+        env:
+          GH_TOKEN: ${{ github.token }}
