@@ -37,6 +37,7 @@ jobs:
       NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
       NOTION_STATE_PAGE_ID: ${{ secrets.NOTION_STATE_PAGE_ID }}
       NOTION_TODO_DS_ID: ${{ secrets.NOTION_TODO_DS_ID }}
+      NOTION_SHOPPING_DS_ID: ${{ secrets.NOTION_SHOPPING_DS_ID }}
       # 텔레그램 실패 알림 (선택). routine-bot 과 같은 봇·같은 채팅방 번호를 써도 돼요.
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -130,7 +131,7 @@ jobs:
           echo "::add-mask::$run_secret"
           echo "RUN_SECRET=$run_secret" >> "$GITHUB_ENV"
           RUN_SECRET="$run_secret" node -e '
-            const keys = ["GOOGLE_CLIENT_ID","GOOGLE_CLIENT_SECRET","GOOGLE_REFRESH_TOKEN","NOTION_TOKEN","NOTION_STATE_PAGE_ID","NOTION_TODO_DS_ID","RUN_SECRET","TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID"];
+            const keys = ["GOOGLE_CLIENT_ID","GOOGLE_CLIENT_SECRET","GOOGLE_REFRESH_TOKEN","NOTION_TOKEN","NOTION_STATE_PAGE_ID","NOTION_TODO_DS_ID","NOTION_SHOPPING_DS_ID","RUN_SECRET","TELEGRAM_BOT_TOKEN","TELEGRAM_CHAT_ID"];
             const out = {};
             for (const k of keys) { const v = (process.env[k] || "").trim(); if (v) out[k] = v; }
             require("fs").writeFileSync(process.env.RUNNER_TEMP + "/secrets.json", JSON.stringify(out));'

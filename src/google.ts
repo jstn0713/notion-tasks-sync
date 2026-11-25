@@ -1,6 +1,6 @@
 // 구글 Tasks API.
 import { ApiError, Budget, Fetcher, request } from "./http";
-import type { GoogleApi, Item, Vals } from "./types";
+import type { GRaw, GTask, GoogleApi } from "./types";
 
 const API = "https://tasks.googleapis.com/tasks/v1";
 
@@ -10,7 +10,7 @@ let cached: { key: string; token: string; exp: number } | null = null;
 const ts = (s?: string) => (s ? Date.parse(s) : 0);
 const norm = (s?: string) => (s ?? "").replace(/\r\n/g, "\n").trim();
 
-function toItem(t: any): Item {
+function toItem(t: any): GTask {
   return {
     id: t.id,
     title: norm(t.title),
@@ -24,7 +24,7 @@ function toItem(t: any): Item {
   };
 }
 
-function body(v: Vals): Record<string, unknown> {
+function body(v: Partial<GRaw>): Record<string, unknown> {
   const b: Record<string, unknown> = {};
   if (v.title !== undefined) b.title = v.title;
   if (v.notes !== undefined) b.notes = v.notes;
@@ -56,15 +56,20 @@ export class Google implements GoogleApi {
     return g;
   }
 
+  private lists: any[] | null = null;
+
   async findList(title: string): Promise<string> {
-    const res = await request<any>(this.f, this.budget, `${API}/users/@me/lists`, { headers: this.h, query: { maxResults: "100" } });
-    const found = (res?.items ?? []).find((l: any) => l.title === title);
+    if (!this.lists) {
+      const res = await request<any>(this.f, this.budget, `${API}/users/@me/lists`, { headers: this.h, query: { maxResults: "100" } });
+      this.lists = res?.items ?? [];
+    }
+    const found = this.lists!.find((l: any) => l.title === title);
     if (!found) throw new ApiError("구글 Tasks에서 지정한 목록 이름을 찾지 못함");
     return found.id;
   }
 
-  async listTasks(listId: string, completedMin: number): Promise<Map<string, Item>> {
-    const out = new Map<string, Item>();
+  async listTasks(listId: string, completedMin: number): Promise<Map<string, GTask>> {
+    const out = new Map<string, GTask>();
     // 구글은 completedMin 을 주면 '완료 안 된 항목'까지 빼버려서, 두 번에 나눠 가져온다.
     // 1) 진행 중 항목 전부 (+ 지워진 진행 중 항목)
     await this.fetchAll(listId, { showCompleted: "false", showHidden: "false", showDeleted: "true" }, out);
@@ -77,7 +82,7 @@ export class Google implements GoogleApi {
     return out;
   }
 
-  private async fetchAll(listId: string, q: Record<string, string>, out: Map<string, Item>): Promise<void> {
+  private async fetchAll(listId: string, q: Record<string, string>, out: Map<string, GTask>): Promise<void> {
     let pageToken: string | undefined;
     do {
       const res = await request<any>(this.f, this.budget, `${API}/lists/${listId}/tasks`, {
@@ -89,18 +94,18 @@ export class Google implements GoogleApi {
     } while (pageToken);
   }
 
-  async getTask(listId: string, id: string): Promise<Item | null> {
+  async getTask(listId: string, id: string): Promise<GTask | null> {
     const res = await request<any>(this.f, this.budget, `${API}/lists/${listId}/tasks/${id}`, { headers: this.h, ok: [200, 404] });
     if (!res || res.error || !res.id) return null;
     return toItem(res);
   }
 
-  async create(listId: string, v: Vals): Promise<string> {
+  async create(listId: string, v: Partial<GRaw>): Promise<string> {
     const res = await request<any>(this.f, this.budget, `${API}/lists/${listId}/tasks`, { method: "POST", headers: this.h, json: body(v) });
     return res.id;
   }
 
-  async update(listId: string, id: string, v: Vals): Promise<void> {
+  async update(listId: string, id: string, v: Partial<GRaw>): Promise<void> {
     await request(this.f, this.budget, `${API}/lists/${listId}/tasks/${id}`, { method: "PATCH", headers: this.h, json: body(v) });
   }
 

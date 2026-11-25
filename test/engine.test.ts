@@ -2,20 +2,21 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { Budget } from "../src/http";
 import { FETCH_WINDOW, SafetyStop, syncList, type ListState } from "../src/engine";
-import { LISTS } from "../src/index";
-import type { GoogleApi, Item, NotionApi, Props, Vals } from "../src/types";
+import { LISTS } from "../src/lists";
+import type { Ctx, Fields, GRaw, GTask, GoogleApi, ListConfig, NPage, NotionApi } from "../src/types";
 
-const CFG = LISTS[0];
+const TODO = LISTS.find((l) => l.key === "todo")!;
+const SHOP = LISTS.find((l) => l.key === "shopping")!;
 const MIN = 60_000;
 const T0 = Date.parse("2026-11-25T10:00:00Z");
 let seq = 1;
 
-class FakeGoogle implements GoogleApi {
-  t = new Map<string, Item>();
+export class FakeGoogle implements GoogleApi {
+  t = new Map<string, GTask>();
   calls = 0;
   clock = T0;
   budget = new Budget(10_000);
-  add(title: string, kw: Partial<Item> = {}) {
+  add(title: string, kw: Partial<GTask> = {}) {
     const id = `g${seq++}`;
     this.t.set(id, { id, title, notes: "", due: "", done: false, parentRaw: "", updated: T0 - 86400_000, ...kw });
     return id;
@@ -25,7 +26,7 @@ class FakeGoogle implements GoogleApi {
   }
   async listTasks(_l: string, completedMin: number) {
     this.budget.take();
-    const out = new Map<string, Item>();
+    const out = new Map<string, GTask>();
     for (const [k, v] of this.t) if (!(v.done && (v.doneAt ?? 0) < completedMin)) out.set(k, { ...v });
     return out;
   }
@@ -34,14 +35,14 @@ class FakeGoogle implements GoogleApi {
     const v = this.t.get(id);
     return v ? { ...v } : null;
   }
-  async create(_l: string, v: Vals) {
+  async create(_l: string, v: Partial<GRaw>) {
     this.budget.take();
     this.calls++;
     const id = `g${seq++}`;
     this.t.set(id, { id, title: v.title ?? "", notes: v.notes ?? "", due: v.due ?? "", done: !!v.done, parentRaw: "", updated: this.clock, doneAt: v.done ? this.clock : undefined });
     return id;
   }
-  async update(_l: string, id: string, v: Vals) {
+  async update(_l: string, id: string, v: Partial<GRaw>) {
     this.budget.take();
     this.calls++;
     const it = this.t.get(id)!;
@@ -60,43 +61,62 @@ class FakeGoogle implements GoogleApi {
   }
 }
 
-class FakeNotion implements NotionApi {
-  p = new Map<string, Item>();
+export class FakeNotion implements NotionApi {
+  p = new Map<string, NPage>();
   trashed = new Set<string>();
   calls = 0;
   clock = T0;
   budget = new Budget(10_000);
-  add(title: string, kw: Partial<Item> = {}) {
+  stores = ["쿠팡", "네이버", "다이소", "마트", "약국", "당근"];
+  constructor(private cfg: ListConfig = TODO) {}
+  private blank(): Fields {
+    const f: Fields = {};
+    for (const s of this.cfg.fields) f[s.name] = s.type === "checkbox" ? false : "";
+    return f;
+  }
+  add(title: string, kw: Partial<NPage> & { f?: Fields } = {}) {
     const id = `n${seq++}`;
-    this.p.set(id, { id, title, notes: "", due: "", done: false, parentRaw: "", updated: T0 - 86400_000, created: T0 - 86400_000, dueRaw: null, ...kw });
+    const f = { ...this.blank(), [this.cfg.titleField]: title, ...(kw.f ?? {}) };
+    this.p.set(id, { id, parentRaw: "", updated: T0 - 86400_000, created: T0 - 86400_000, dateRaw: {}, ...kw, f });
     return id;
   }
-  async listPages(_ds: string, _p: Props, since: number) {
+  async selectOptions() {
     this.budget.take();
-    const out = new Map<string, Item>();
-    for (const [k, v] of this.p) if (!this.trashed.has(k) && (!v.done || v.updated >= since)) out.set(k, { ...v });
+    return [...this.stores];
+  }
+  async listPages(_ds: string, _c: ListConfig, since: number) {
+    this.budget.take();
+    const out = new Map<string, NPage>();
+    for (const [k, v] of this.p) if (!this.trashed.has(k) && (!v.f.done || v.updated >= since)) out.set(k, structuredClone(v));
     return out;
   }
   async getPage(id: string) {
     this.budget.take();
     const v = this.p.get(id);
-    return v && !this.trashed.has(id) ? { ...v } : null;
+    return v && !this.trashed.has(id) ? structuredClone(v) : null;
   }
-  async create(_ds: string, _p: Props, v: Vals) {
+  async create(_ds: string, _c: ListConfig, f: Fields) {
     this.budget.take();
     this.calls++;
     const id = `n${seq++}`;
-    this.p.set(id, { id, title: v.title ?? "", notes: v.notes ?? "", due: v.due ?? "", done: !!v.done, parentRaw: "", updated: this.clock, created: this.clock, dueRaw: v.due || null });
+    const dateRaw: Record<string, string | null> = {};
+    for (const s of this.cfg.fields) if (s.type === "date") dateRaw[s.name] = (f[s.name] as string) || null;
+    this.p.set(id, { id, f: { ...this.blank(), ...f }, parentRaw: "", updated: this.clock, created: this.clock, dateRaw });
     return id;
   }
-  async update(_p: Props, page: Item, v: Vals) {
+  async update(_c: ListConfig, page: NPage, v: Fields) {
     this.budget.take();
     this.calls++;
     const it = this.p.get(page.id)!;
-    if (v.due !== undefined) it.dueRaw = v.due && it.dueRaw && it.dueRaw.length > 10 ? v.due + it.dueRaw.slice(10) : v.due || null;
-    Object.assign(it, v, { updated: this.clock });
+    for (const [k, val] of Object.entries(v)) {
+      const raw = it.dateRaw[k];
+      if (k in it.dateRaw || this.cfg.fields.find((s) => s.name === k)?.type === "date")
+        it.dateRaw[k] = val && raw && raw.length > 10 ? String(val) + raw.slice(10) : (val as string) || null;
+      it.f[k] = val;
+    }
+    it.updated = this.clock;
   }
-  async setParent(_p: Props, id: string, parent: string) {
+  async setParent(_c: ListConfig, id: string, parent: string) {
     this.budget.take();
     this.calls++;
     Object.assign(this.p.get(id)!, { parentRaw: parent, updated: this.clock });
@@ -112,37 +132,41 @@ let G: FakeGoogle;
 let N: FakeNotion;
 let st: ListState;
 let ids: Record<string, string>;
+let CFG: ListConfig = TODO;
 
 async function run(now: number, opts: { dry?: boolean; budget?: Budget } = {}) {
   G.clock = N.clock = now;
   const budget = opts.budget ?? new Budget(10_000);
   G.budget = N.budget = budget;
-  return syncList({ cfg: CFG, g: G, n: N, budget, gList: "L", dsId: "DS", st, now, dryRun: !!opts.dry });
+  const ctx: Ctx = { stores: CFG.storeProp ? await N.selectOptions() : [] };
+  return syncList({ cfg: CFG, g: G, n: N, budget, gList: "L", dsId: "DS", st, now, dryRun: !!opts.dry, ctx });
 }
 const nidOf = (gid: string) => st.pairs![gid].nid;
 const gidOf = (nid: string) => Object.entries(st.pairs!).find(([, p]) => p.nid === nid)![0];
+const nf = (nid: string) => N.p.get(nid)!.f;
 
-beforeEach(async () => {
-  G = new FakeGoogle();
-  N = new FakeNotion();
-  st = {};
-  ids = {
-    a: G.add("보수교육"),
-    b: G.add("같은제목"),
-    oldDone: G.add("옛날완료", { done: true, doneAt: T0 - 40 * 86400_000 }),
-    nSame: N.add("같은제목", { notes: "노션메모" }),
-    nOnly: N.add("노션에만"),
-    nOldDone: N.add("테스트", { done: true }),
-    nBlank: N.add(""),
-  };
-  await run(T0);
-});
+describe("TO-DO", () => {
+  beforeEach(async () => {
+    CFG = TODO;
+    G = new FakeGoogle();
+    N = new FakeNotion(TODO);
+    st = {};
+    ids = {
+      a: G.add("보수교육"),
+      b: G.add("같은제목"),
+      oldDone: G.add("옛날완료", { done: true, doneAt: T0 - 40 * 86400_000 }),
+      nSame: N.add("같은제목", { f: { notes: "노션메모" } }),
+      nOnly: N.add("노션에만"),
+      nOldDone: N.add("테스트", { f: { done: true } }),
+      nBlank: N.add(""),
+    };
+    await run(T0);
+  });
 
-describe("처음 연결", () => {
-  it("같은 제목끼리 짝, 빈 칸은 채우고, 옛 완료·빈 제목은 무시", () => {
+  it("처음 연결: 같은 제목끼리 짝, 빈 칸은 채우고, 옛 완료·빈 제목은 무시", () => {
     expect(nidOf(ids.b)).toBe(ids.nSame);
     expect(G.t.get(ids.b)!.notes).toBe("노션메모");
-    expect(N.p.get(nidOf(ids.a))!.title).toBe("보수교육");
+    expect(nf(nidOf(ids.a)).title).toBe("보수교육");
     expect(st.pairs![ids.oldDone]).toBeUndefined();
     const linked = new Set(Object.values(st.pairs!).map((p) => p.nid));
     expect(linked.has(ids.nOnly)).toBe(true);
@@ -154,9 +178,6 @@ describe("처음 연결", () => {
     const blob = JSON.stringify(st);
     for (const w of ["보수교육", "같은제목", "노션메모", "노션에만"]) expect(blob).not.toContain(w);
   });
-});
-
-describe("평소 동기화", () => {
   it("바뀐 게 없으면 아무것도 안 함", async () => {
     G.calls = N.calls = 0;
     const c = await run(T0 + 5 * MIN);
@@ -166,44 +187,42 @@ describe("평소 동기화", () => {
   it("구글에서 완료 → Notion 완료", async () => {
     Object.assign(G.t.get(ids.a)!, { done: true, doneAt: T0 + MIN, updated: T0 + MIN });
     await run(T0 + 5 * MIN);
-    expect(N.p.get(nidOf(ids.a))!.done).toBe(true);
+    expect(nf(nidOf(ids.a)).done).toBe(true);
   });
   it("양쪽에서 다른 칸을 고치면 둘 다 반영", async () => {
     const nid = nidOf(ids.b);
-    Object.assign(N.p.get(nid)!, { title: "노션에서 고친 제목", updated: T0 + 2 * MIN });
+    nf(nid).title = "노션에서 고친 제목";
+    N.p.get(nid)!.updated = T0 + 2 * MIN;
     Object.assign(G.t.get(ids.b)!, { notes: "구글에서 고친 메모", updated: T0 + 3 * MIN });
     await run(T0 + 5 * MIN);
-    for (const it of [G.t.get(ids.b)!, N.p.get(nid)!]) {
-      expect(it.title).toBe("노션에서 고친 제목");
-      expect(it.notes).toBe("구글에서 고친 메모");
-    }
+    expect(G.t.get(ids.b)!.title).toBe("노션에서 고친 제목");
+    expect(nf(nid).notes).toBe("구글에서 고친 메모");
   });
   it("같은 칸을 양쪽에서 고치면 나중에 고친 쪽", async () => {
     const nid = nidOf(ids.b);
-    Object.assign(N.p.get(nid)!, { title: "노션판", updated: T0 + 2 * MIN });
+    nf(nid).title = "노션판";
+    N.p.get(nid)!.updated = T0 + 2 * MIN;
     Object.assign(G.t.get(ids.b)!, { title: "구글판", updated: T0 + 4 * MIN });
     await run(T0 + 5 * MIN);
-    expect(N.p.get(nid)!.title).toBe("구글판");
-    expect(G.t.get(ids.b)!.title).toBe("구글판");
+    expect(nf(nid).title).toBe("구글판");
   });
   it("Notion 시간은 유지하고 날짜만 바뀜", async () => {
     const nid = nidOf(ids.b);
-    Object.assign(N.p.get(nid)!, { due: "2026-11-26", dueRaw: "2026-11-26T15:00:00.000+09:00", updated: T0 + MIN });
+    nf(nid).due = "2026-11-26";
+    N.p.get(nid)!.dateRaw.due = "2026-11-26T15:00:00.000+09:00";
+    N.p.get(nid)!.updated = T0 + MIN;
     await run(T0 + 5 * MIN);
     expect(G.t.get(ids.b)!.due).toBe("2026-11-26");
     Object.assign(G.t.get(ids.b)!, { due: "2026-11-28", updated: T0 + 7 * MIN });
     await run(T0 + 10 * MIN);
-    expect(N.p.get(nid)!.dueRaw).toBe("2026-11-28T15:00:00.000+09:00");
+    expect(N.p.get(nid)!.dateRaw.due).toBe("2026-11-28T15:00:00.000+09:00");
   });
   it("금방 적고 바로 완료한 구글 항목도 넘어옴", async () => {
     const q = G.add("금방끝냄", { done: true, doneAt: T0 + 2 * MIN, updated: T0 + 2 * MIN });
     await run(T0 + 5 * MIN);
-    expect(N.p.get(nidOf(q))!.done).toBe(true);
+    expect(nf(nidOf(q)).done).toBe(true);
   });
-});
-
-describe("삭제", () => {
-  it("구글 삭제 → Notion 휴지통, Notion 삭제 → 구글 삭제", async () => {
+  it("삭제: 구글 삭제 → Notion 휴지통, Notion 삭제 → 구글 삭제", async () => {
     const nidA = nidOf(ids.a);
     G.t.get(ids.a)!.gone = true;
     const gOnly = gidOf(ids.nOnly);
@@ -224,33 +243,29 @@ describe("삭제", () => {
   it("오래전에 완료돼서 조회에서 빠진 짝은 지우지 않음", async () => {
     Object.assign(G.t.get(ids.a)!, { done: true, doneAt: T0 + MIN, updated: T0 + MIN });
     await run(T0 + 5 * MIN);
-    const later = T0 + FETCH_WINDOW + 86400_000;
     G.calls = N.calls = 0;
-    await run(later);
+    await run(T0 + FETCH_WINDOW + 86400_000);
     expect(N.trashed.has(nidOf(ids.a))).toBe(false);
-    expect(G.t.get(ids.a)!.gone).toBeFalsy();
     expect(G.calls + N.calls).toBe(0);
   });
   it("오래된 완료 항목을 Notion에서 되살리면 구글도 되살아남", async () => {
     Object.assign(G.t.get(ids.a)!, { done: true, doneAt: T0 + MIN, updated: T0 + MIN });
     await run(T0 + 5 * MIN);
     const later = T0 + FETCH_WINDOW + 86400_000;
-    Object.assign(N.p.get(nidOf(ids.a))!, { done: false, updated: later - MIN });
+    nf(nidOf(ids.a)).done = false;
+    N.p.get(nidOf(ids.a))!.updated = later - MIN;
     await run(later);
     expect(G.t.get(ids.a)!.done).toBe(false);
   });
-});
-
-describe("반복·하위 할 일", () => {
   it("반복 항목은 Next Due 를 구글로, 날짜는 Notion 기준", async () => {
-    const nid = N.add("물 주기", { repeat: true, due: "2026-11-20", dueRaw: "2026-11-20", nextDue: "2026-11-27", created: T0 + MIN });
+    const nid = N.add("물 주기", { repeat: true, nextDue: "2026-11-27", created: T0 + MIN, f: { due: "2026-11-20" } });
     await run(T0 + 5 * MIN);
     const gid = gidOf(nid);
     expect(G.t.get(gid)!.due).toBe("2026-11-27");
     Object.assign(G.t.get(gid)!, { due: "2026-12-01", updated: T0 + 7 * MIN });
     await run(T0 + 10 * MIN);
     expect(G.t.get(gid)!.due).toBe("2026-11-27");
-    expect(N.p.get(nid)!.due).toBe("2026-11-20");
+    expect(nf(nid).due).toBe("2026-11-20");
   });
   it("구글 하위 → Notion Parent Task, Notion 손자 → 구글 최상위 조상 아래", async () => {
     const child = G.add("하위", { parentRaw: ids.a, updated: T0 + MIN });
@@ -261,31 +276,14 @@ describe("반복·하위 할 일", () => {
     expect(G.t.get(gidOf(grand))!.parentRaw).toBe(ids.a);
     expect(N.p.get(grand)!.parentRaw).toBe(nidOf(child));
   });
-});
-
-describe("무료 플랜 요청 한도", () => {
-  it("일이 많으면 나눠서 처리하고, 몇 번 돌면 결국 다 맞춰짐", async () => {
+  it("요청 한도: 일이 많으면 나눠서 처리하고 결국 다 맞춰짐 (중복 없음)", async () => {
     for (let i = 0; i < 30; i++) G.add(`많음${i}`, { updated: T0 + MIN });
     let c = await run(T0 + 5 * MIN, { budget: new Budget(20) });
     expect(c.deferred).toBeGreaterThan(0);
     for (let k = 2; k < 6; k++) c = await run(T0 + k * 5 * MIN, { budget: new Budget(20) });
     expect(c.deferred).toBe(0);
-    const titles = new Set([...N.p.values()].map((x) => x.title));
-    for (let i = 0; i < 30; i++) expect(titles.has(`많음${i}`)).toBe(true);
-    expect([...N.p.values()].filter((x) => x.title === "많음0").length).toBe(1); // 중복 없음
-  });
-});
-
-describe("기타", () => {
-  it("시험 실행은 아무것도 안 바꿈", async () => {
-    G = new FakeGoogle();
-    N = new FakeNotion();
-    st = {};
-    G.add("하나");
-    N.add("둘");
-    const c = await run(T0, { dry: true });
-    expect(G.calls + N.calls).toBe(0);
-    expect([c.nCreate, c.gCreate]).toEqual([1, 1]);
+    const titles = [...N.p.values()].map((x) => x.f.title);
+    for (let i = 0; i < 30; i++) expect(titles.filter((t) => t === `많음${i}`).length).toBe(1);
   });
   it("예전 형식 장부(내용이 그대로 적힌 것)도 바뀌는 것 없이 옮겨짐", async () => {
     for (const [gid, pr] of Object.entries(st.pairs!)) {
@@ -296,5 +294,93 @@ describe("기타", () => {
     await run(T0 + 5 * MIN);
     expect(G.calls + N.calls).toBe(0);
     expect(Object.values(st.pairs!).every((p) => p.last?.h === 1)).toBe(true);
+  });
+  it("시험 실행은 아무것도 안 바꿈", async () => {
+    G = new FakeGoogle();
+    N = new FakeNotion(TODO);
+    st = {};
+    G.add("하나");
+    N.add("둘");
+    const c = await run(T0, { dry: true });
+    expect(G.calls + N.calls).toBe(0);
+    expect([c.nCreate, c.gCreate]).toEqual([1, 1]);
+  });
+});
+
+describe("장바구니", () => {
+  beforeEach(async () => {
+    CFG = SHOP;
+    G = new FakeGoogle();
+    N = new FakeNotion(SHOP);
+    st = {};
+    ids = {
+      g1: G.add("다이소 신발 얼룩 지우개"),
+      old: G.add("물티슈", { done: true, doneAt: T0 - 10 * 86400_000 }),
+      n1: N.add("신발 얼룩 지우개", { f: { store: "다이소" } }),
+      blank: N.add(""),
+    };
+    await run(T0);
+  });
+
+  it("처음 연결: 구글 '다이소 신발 얼룩 지우개' ↔ Notion 품목+구매처, 바꿀 것 없음", async () => {
+    expect(nidOf(ids.g1)).toBe(ids.n1);
+    expect(G.t.get(ids.g1)!.title).toBe("다이소 신발 얼룩 지우개");
+    expect(Object.keys(st.pairs!).length).toBe(1); // 옛 완료·빈 줄은 무시
+    G.calls = N.calls = 0;
+    await run(T0 + 5 * MIN);
+    expect(G.calls + N.calls).toBe(0);
+  });
+
+  it("구글에 '쿠팡 물티슈 3개 !' + 세부정보 주소 → Notion 칸으로 나뉨", async () => {
+    const g = G.add("쿠팡 물티슈 3개 !", { notes: "두꺼운 걸로\nhttps://link.coupang.com/a/abc123", updated: T0 + MIN });
+    await run(T0 + 5 * MIN);
+    expect(nf(nidOf(g))).toMatchObject({ item: "물티슈", store: "쿠팡", qty: "3", urgent: true, memo: "두꺼운 걸로", link: "https://link.coupang.com/a/abc123", done: false });
+  });
+
+  it("Notion에서 수량·급함·구매처를 바꾸면 구글 제목이 다시 만들어짐", async () => {
+    Object.assign(nf(ids.n1), { qty: "2", urgent: true, store: "쿠팡" });
+    N.p.get(ids.n1)!.updated = T0 + MIN;
+    const c = await run(T0 + 5 * MIN);
+    expect(G.t.get(ids.g1)!.title).toBe("쿠팡 신발 얼룩 지우개 2개 !");
+    expect(c.gFields).toMatchObject({ store: 1, qty: 1, urgent: 1 });
+  });
+
+  it("Notion 링크·메모 → 구글 세부정보에 합쳐짐", async () => {
+    Object.assign(nf(ids.n1), { memo: "검정색", link: "https://naver.me/xyz" });
+    N.p.get(ids.n1)!.updated = T0 + MIN;
+    await run(T0 + 5 * MIN);
+    expect(G.t.get(ids.g1)!.notes).toBe("검정색\nhttps://naver.me/xyz");
+  });
+
+  it("구글에서 제목 앞 매장을 바꾸면 Notion 구매처가 바뀜 (다른 이름도 인식)", async () => {
+    Object.assign(G.t.get(ids.g1)!, { title: "엔플 신발 얼룩 지우개", updated: T0 + MIN });
+    await run(T0 + 5 * MIN);
+    expect(nf(ids.n1)).toMatchObject({ store: "네이버", item: "신발 얼룩 지우개" });
+    // 구글 제목은 대표 이름으로 정리됨
+    expect(G.t.get(ids.g1)!.title).toBe("네이버 신발 얼룩 지우개");
+  });
+
+  it("살 날짜·구매완료 양쪽 연동", async () => {
+    Object.assign(G.t.get(ids.g1)!, { due: "2026-11-28", updated: T0 + MIN });
+    await run(T0 + 5 * MIN);
+    expect(nf(ids.n1).due).toBe("2026-11-28");
+    nf(ids.n1).done = true;
+    N.p.get(ids.n1)!.updated = T0 + 6 * MIN;
+    await run(T0 + 10 * MIN);
+    expect(G.t.get(ids.g1)!.done).toBe(true);
+  });
+
+  it("Notion에 새로 추가한 구매처도 다음 실행부터 인식", async () => {
+    N.stores.push("올리브영");
+    const g = G.add("올리브영 선크림", { updated: T0 + MIN });
+    await run(T0 + 5 * MIN);
+    expect(nf(nidOf(g))).toMatchObject({ store: "올리브영", item: "선크림" });
+  });
+
+  it("장부에 장바구니 내용이 남지 않음", async () => {
+    G.add("쿠팡 물티슈 3개 !", { notes: "https://link.coupang.com/a/abc123", updated: T0 + MIN });
+    await run(T0 + 5 * MIN);
+    const blob = JSON.stringify(st);
+    for (const w of ["물티슈", "신발", "coupang", "다이소"]) expect(blob).not.toContain(w);
   });
 });

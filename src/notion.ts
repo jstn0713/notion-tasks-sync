@@ -1,6 +1,7 @@
 // Notion API (데이터베이스 항목 + '동기화 기록' 페이지).
+// 칸 구성은 목록 설정(ListConfig.fields)을 따른다.
 import { ApiError, Budget, Fetcher, request } from "./http";
-import type { Item, NotionApi, Props, Vals } from "./types";
+import type { Fields, ListConfig, NPage, NotionApi, Value } from "./types";
 
 const API = "https://api.notion.com/v1";
 const VERSION = "2025-09-03";
@@ -14,42 +15,95 @@ export function rich(text: string): any[] {
   return out;
 }
 
-export function pageToItem(pg: any, p: Props): Item | null {
+const doneProp = (cfg: ListConfig) => cfg.fields.find((f) => f.name === "done")!.notion;
+
+export function pageToItem(pg: any, cfg: ListConfig): NPage | null {
   if (pg.in_trash || pg.archived) return null;
   const pr = pg.properties ?? {};
-  const dueRaw: string | null = pr[p.due]?.date?.start ?? null;
-  const rel = pr[p.parent]?.relation ?? [];
-  const freq = p.frequency ? plain(pr[p.frequency]?.rich_text) : "";
+  const f: Fields = {};
+  const dateRaw: Record<string, string | null> = {};
+  for (const spec of cfg.fields) {
+    const p = pr[spec.notion];
+    switch (spec.type) {
+      case "title":
+        f[spec.name] = norm(plain(p?.title));
+        break;
+      case "rich_text":
+        f[spec.name] = norm(plain(p?.rich_text));
+        break;
+      case "checkbox":
+        f[spec.name] = Boolean(p?.checkbox);
+        break;
+      case "date":
+        dateRaw[spec.name] = p?.date?.start ?? null;
+        f[spec.name] = (p?.date?.start ?? "").slice(0, 10);
+        break;
+      case "select":
+        f[spec.name] = p?.select?.name ?? "";
+        break;
+      case "number":
+        f[spec.name] = typeof p?.number === "number" ? String(p.number) : "";
+        break;
+      case "url":
+        f[spec.name] = (p?.url ?? "").trim();
+        break;
+    }
+  }
+  let repeat = false;
   let nextDue = "";
-  const f = p.nextDue ? pr[p.nextDue]?.formula : undefined;
-  if (f?.type === "date" && f.date?.start) nextDue = String(f.date.start).slice(0, 10);
-  else if (f?.type === "string" && f.string) nextDue = String(f.string).slice(0, 10);
+  if (cfg.repeat) {
+    repeat = plain(pr[cfg.repeat.frequencyProp]?.rich_text).trim().length > 0;
+    const fm = pr[cfg.repeat.nextDueProp]?.formula;
+    if (fm?.type === "date" && fm.date?.start) nextDue = String(fm.date.start).slice(0, 10);
+    else if (fm?.type === "string" && fm.string) nextDue = String(fm.string).slice(0, 10);
+  }
+  const rel = cfg.parentProp ? pr[cfg.parentProp]?.relation ?? [] : [];
   return {
     id: pg.id,
-    title: norm(plain(pr[p.title]?.title)),
-    notes: norm(plain(pr[p.notes]?.rich_text)),
-    due: (dueRaw ?? "").slice(0, 10),
-    done: Boolean(pr[p.done]?.checkbox),
+    f,
     parentRaw: rel[0]?.id ?? "",
     updated: Date.parse(pg.last_edited_time),
     created: Date.parse(pg.created_time),
-    dueRaw,
-    repeat: freq.trim().length > 0,
+    dateRaw,
+    repeat,
     nextDue,
   };
 }
 
-export function propsFor(p: Props, v: Vals, old: Item | null): Record<string, unknown> {
+export function propsFor(cfg: ListConfig, vals: Fields, old: NPage | null): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  if (v.title !== undefined) out[p.title] = { title: rich(v.title) };
-  if (v.notes !== undefined) out[p.notes] = { rich_text: rich(v.notes) };
-  if (v.done !== undefined) out[p.done] = { checkbox: v.done };
-  if (v.due !== undefined) {
-    if (!v.due) out[p.due] = { date: null };
-    else {
-      // Notion 에 시간이 들어 있었다면 시간은 그대로 두고 날짜만 바꾼다
-      const start = old?.dueRaw && old.dueRaw.length > 10 ? v.due + old.dueRaw.slice(10) : v.due;
-      out[p.due] = { date: { start } };
+  for (const spec of cfg.fields) {
+    if (!(spec.name in vals)) continue;
+    const v: Value = vals[spec.name];
+    const s = typeof v === "string" ? v : "";
+    switch (spec.type) {
+      case "title":
+        out[spec.notion] = { title: rich(s) };
+        break;
+      case "rich_text":
+        out[spec.notion] = { rich_text: rich(s) };
+        break;
+      case "checkbox":
+        out[spec.notion] = { checkbox: Boolean(v) };
+        break;
+      case "date": {
+        if (!s) out[spec.notion] = { date: null };
+        else {
+          // Notion 에 시간이 들어 있었다면 시간은 그대로 두고 날짜만 바꾼다
+          const raw = old?.dateRaw[spec.name];
+          out[spec.notion] = { date: { start: raw && raw.length > 10 ? s + raw.slice(10) : s } };
+        }
+        break;
+      }
+      case "select":
+        out[spec.notion] = { select: s ? { name: s } : null };
+        break;
+      case "number":
+        out[spec.notion] = { number: s === "" ? null : Number(s) };
+        break;
+      case "url":
+        out[spec.notion] = { url: s || null };
+        break;
     }
   }
   return out;
@@ -61,8 +115,14 @@ export class Notion implements NotionApi {
     this.h = { authorization: `Bearer ${token}`, "notion-version": VERSION };
   }
 
-  async listPages(dsId: string, p: Props, editedSince: number): Promise<Map<string, Item>> {
-    const out = new Map<string, Item>();
+  async selectOptions(dsId: string, prop: string): Promise<string[]> {
+    const res = await request<any>(this.f, this.budget, `${API}/data_sources/${dsId}`, { headers: this.h });
+    const p = res?.properties?.[prop];
+    return (p?.select?.options ?? []).map((o: any) => String(o.name));
+  }
+
+  async listPages(dsId: string, cfg: ListConfig, editedSince: number): Promise<Map<string, NPage>> {
+    const out = new Map<string, NPage>();
     let cursor: string | undefined;
     do {
       const res = await request<any>(this.f, this.budget, `${API}/data_sources/${dsId}/query`, {
@@ -74,14 +134,14 @@ export class Notion implements NotionApi {
           // 진행 중 항목 + 최근에 고친 항목만 (오래전에 완료된 항목은 빼서 요청 수 절약)
           filter: {
             or: [
-              { property: p.done, checkbox: { equals: false } },
+              { property: doneProp(cfg), checkbox: { equals: false } },
               { timestamp: "last_edited_time", last_edited_time: { on_or_after: new Date(editedSince).toISOString() } },
             ],
           },
         },
       });
       for (const pg of res?.results ?? []) {
-        const it = pageToItem(pg, p);
+        const it = pageToItem(pg, cfg);
         if (it) out.set(it.id, it);
       }
       cursor = res?.has_more ? res.next_cursor : undefined;
@@ -89,32 +149,33 @@ export class Notion implements NotionApi {
     return out;
   }
 
-  async getPage(id: string, p: Props): Promise<Item | null> {
+  async getPage(id: string, cfg: ListConfig): Promise<NPage | null> {
     const res = await request<any>(this.f, this.budget, `${API}/pages/${id}`, { headers: this.h, ok: [200, 404] });
     if (!res || res.object !== "page") return null;
-    return pageToItem(res, p);
+    return pageToItem(res, cfg);
   }
 
-  async create(dsId: string, p: Props, v: Vals): Promise<string> {
+  async create(dsId: string, cfg: ListConfig, vals: Fields): Promise<string> {
     const res = await request<any>(this.f, this.budget, `${API}/pages`, {
       method: "POST",
       headers: this.h,
-      json: { parent: { type: "data_source_id", data_source_id: dsId }, properties: propsFor(p, v, null) },
+      json: { parent: { type: "data_source_id", data_source_id: dsId }, properties: propsFor(cfg, vals, null) },
     });
     return res.id;
   }
 
-  async update(p: Props, page: Item, v: Vals): Promise<void> {
-    const properties = propsFor(p, v, page);
+  async update(cfg: ListConfig, page: NPage, vals: Fields): Promise<void> {
+    const properties = propsFor(cfg, vals, page);
     if (Object.keys(properties).length === 0) return;
     await request(this.f, this.budget, `${API}/pages/${page.id}`, { method: "PATCH", headers: this.h, json: { properties } });
   }
 
-  async setParent(p: Props, id: string, parentId: string): Promise<void> {
+  async setParent(cfg: ListConfig, id: string, parentId: string): Promise<void> {
+    if (!cfg.parentProp) return;
     await request(this.f, this.budget, `${API}/pages/${id}`, {
       method: "PATCH",
       headers: this.h,
-      json: { properties: { [p.parent]: { relation: parentId ? [{ id: parentId }] : [] } } },
+      json: { properties: { [cfg.parentProp]: { relation: parentId ? [{ id: parentId }] : [] } } },
     });
   }
 

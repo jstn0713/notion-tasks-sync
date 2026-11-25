@@ -7,26 +7,11 @@ import { Budget, ApiError } from "./http";
 import { Google } from "./google";
 import { Notion } from "./notion";
 import { SafetyStop, summary, syncList, type Counts, type ListState } from "./engine";
-import type { ListConfig } from "./types";
+import { LISTS } from "./lists";
+import type { Ctx } from "./types";
 import { reportFailure, reportSuccess, welcomeOnce } from "./alert";
 
-export const LISTS: ListConfig[] = [
-  {
-    key: "todo",
-    googleListTitle: "할 일",
-    notionDsEnv: "NOTION_TODO_DS_ID",
-    props: {
-      title: "할 일",
-      done: "완료",
-      notes: "메모",
-      due: "마감일",
-      parent: "Parent Task",
-      frequency: "Frequency", // 비어 있지 않으면 '반복 항목'
-      nextDue: "Next Due", // 반복 항목은 이 날짜를 구글로 보낸다
-    },
-  },
-  // 나중에 '살 것들' ↔ 장바구니, 'AI 개발' ↔ AI 개발을 여기에 추가
-];
+export { LISTS };
 
 export interface Env {
   GOOGLE_CLIENT_ID?: string;
@@ -35,6 +20,7 @@ export interface Env {
   NOTION_TOKEN?: string;
   NOTION_STATE_PAGE_ID?: string;
   NOTION_TODO_DS_ID?: string;
+  NOTION_SHOPPING_DS_ID?: string;
   RUN_SECRET?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
@@ -55,7 +41,11 @@ export interface RunResult {
 
 const clean = (s: unknown) => (typeof s === "string" ? s.trim() : "");
 
-export async function runSync(env: Env, dry: boolean, now = Date.now(), fetcher: typeof fetch = fetch): Promise<RunResult> {
+/**
+ * allowInit: 처음 연결(짝짓기)을 해도 되는지. 5분 자동 실행은 false 라서,
+ * 새 목록은 사용자가 Actions 에서 '지금 바로 동기화'를 눌러야 처음 연결된다.
+ */
+export async function runSync(env: Env, dry: boolean, now = Date.now(), fetcher: typeof fetch = fetch, allowInit = true): Promise<RunResult> {
   const budget = new Budget(REQUEST_LIMIT);
   const result: RunResult = { ok: false, dry, lists: {}, requests: 0 };
   try {
@@ -76,9 +66,14 @@ export async function runSync(env: Env, dry: boolean, now = Date.now(), fetcher:
         result.lists[cfg.key] = "Notion ID 가 없어 건너뜀";
         continue;
       }
+      if (!dry && !allowInit && !state.lists[cfg.key]?.initialized) {
+        result.lists[cfg.key] = "처음 연결 대기 중 (Actions → deploy → '지금 바로 동기화'를 누르면 시작)";
+        continue;
+      }
       const gList = await g.findList(cfg.googleListTitle);
+      const ctx: Ctx = { stores: cfg.storeProp ? await n.selectOptions(dsId, cfg.storeProp) : [] };
       const st: ListState = (state.lists[cfg.key] ??= {});
-      const counts: Counts = await syncList({ cfg, g, n, budget, gList, dsId, st, now, dryRun: dry });
+      const counts: Counts = await syncList({ cfg, g, n, budget, gList, dsId, st, now, dryRun: dry, ctx });
       result.lists[cfg.key] = summary(counts);
     }
 
@@ -104,7 +99,7 @@ function logResult(r: RunResult) {
 export default {
   async scheduled(_c: ScheduledController, env: Env, _ctx: ExecutionContext): Promise<void> {
     const now = Date.now();
-    const r = await runSync(env, false, now);
+    const r = await runSync(env, false, now, fetch, false);
     logResult(r);
     try {
       if (r.ok) await reportSuccess(env, now);

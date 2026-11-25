@@ -143,3 +143,13 @@ describe("전체 흐름", () => {
     expect(writes).toHaveLength(0);
   });
 });
+
+describe("처음 연결은 직접 눌러야만", () => {
+  it("자동 실행(allowInit=false)은 아직 연결 안 된 목록을 건드리지 않음", async () => {
+    const s = fakeServer();
+    const r = await runSync(env, false, Date.parse("2026-11-25T10:00:00Z"), s.f, false);
+    expect(r.ok).toBe(true);
+    expect(r.lists.todo).toContain("처음 연결 대기");
+    expect(s.calls.filter((c) => c.method !== "GET" && !c.url.includes("oauth2"))).toHaveLength(1); // 장부 저장만
+  });
+});

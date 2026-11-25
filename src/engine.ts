@@ -1,15 +1,15 @@
 // 동기화 핵심 규칙. 구글/Notion API 와 분리되어 있어서 가짜 데이터로 테스트할 수 있다.
+// 목록마다 칸 구성이 달라서, 구글 쪽은 codec 으로 '칸'으로 풀어서(decode) 비교한다.
 //
-// 정해둔 규칙
-// - 칸: 제목·메모·날짜·완료·하위 할 일(부모)
-// - 양쪽이 같은 칸을 고치면 나중에 고친 쪽, 한쪽만 고치면 그쪽
-// - 처음 연결 때 제목이 같으면 짝, 제목은 Notion 쪽으로
-// - 반복 항목(Notion Frequency 가 있음)은 'Next Due' 를 구글 날짜로 보내고, 날짜는 Notion 기준
+// 정해둔 규칙 (모든 목록 공통)
+// - 칸별로 합침: 한쪽만 고치면 그쪽, 같은 칸을 양쪽이 고치면 나중에 고친 쪽
+// - 처음 연결 때 제목(titleField)이 같으면 짝, 제목은 Notion 쪽으로
 // - 한쪽에서 지우면 반대쪽도 지움 (Notion 은 휴지통). 한 번에 5개 넘게 지우려 하면 멈춤
 // - 장부에는 내용 대신 지문(해시)만
 // - 무료 플랜 요청 한도 때문에 일이 많으면 나눠서 처리 (나머지는 다음 실행 때)
+// TO-DO 전용: 하위 할 일(parentProp), 반복 항목(repeat)
 
-import type { GoogleApi, Item, ListConfig, NotionApi, Vals } from "./types";
+import type { Ctx, Fields, GRaw, GTask, GoogleApi, ListConfig, NPage, NotionApi, Value } from "./types";
 import { Budget } from "./http";
 
 export const MAX_DELETES_PER_RUN = 5;
@@ -18,21 +18,9 @@ export const FETCH_WINDOW = 30 * 86400_000; // 오래전에 완료된 항목은 
 export const PRUNE_AFTER = 120 * 86400_000; // 양쪽 다 완료된 지 오래된 짝은 장부에서 정리
 export const RESERVE = 3; // 장부 저장용으로 남겨둘 요청 수
 
-const FIELDS = ["title", "notes", "due", "done", "parent"] as const;
-type Field = (typeof FIELDS)[number];
-const HASHED: Field[] = ["title", "notes", "due"];
-
 export class SafetyStop extends Error {}
 
-export interface Last {
-  title?: string;
-  notes?: string;
-  due?: string;
-  done?: boolean;
-  parent?: string;
-  t?: string;
-  h?: number;
-}
+export type Last = Record<string, Value | number | undefined> & { t?: string; h?: number };
 export interface Pair {
   nid: string;
   last: Last | null;
@@ -58,16 +46,19 @@ export interface Counts {
   nFields: Record<string, number>;
 }
 
-const FIELD_KO: Record<string, string> = { title: "제목", notes: "메모", due: "날짜", done: "완료", parent: "하위" };
-const fields = (m: Record<string, number>) => {
+const FIELD_KO: Record<string, string> = {
+  title: "제목", notes: "메모", due: "날짜", done: "완료", parent: "하위",
+  item: "품목", store: "구매처", qty: "수량", urgent: "급함", memo: "메모", link: "링크",
+};
+const fieldsText = (m: Record<string, number>) => {
   const parts = Object.entries(m).filter(([, v]) => v > 0).map(([k, v]) => `${FIELD_KO[k] ?? k} ${v}`);
   return parts.length ? `(${parts.join("·")})` : "";
 };
 
 export function summary(c: Counts): string {
   return (
-    `짝 ${c.linked}개 | 구글: 새로 ${c.gCreate}, 수정 ${c.gUpdate}${fields(c.gFields)}, 삭제 ${c.gDelete} | ` +
-    `Notion: 새로 ${c.nCreate}, 수정 ${c.nUpdate}${fields(c.nFields)}, 휴지통 ${c.nDelete}` +
+    `짝 ${c.linked}개 | 구글: 새로 ${c.gCreate}, 수정 ${c.gUpdate}${fieldsText(c.gFields)}, 삭제 ${c.gDelete} | ` +
+    `Notion: 새로 ${c.nCreate}, 수정 ${c.nUpdate}${fieldsText(c.nFields)}, 휴지통 ${c.nDelete}` +
     (c.deferred ? ` | 다음 실행으로 미룸 ${c.deferred}` : "") +
     ` | 확인한 항목: 구글 ${c.gSeen}·Notion ${c.nSeen}`
   );
@@ -78,25 +69,24 @@ async function sha16(s: string): Promise<string> {
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
 }
 
-export async function fp(f: Field, v: string | boolean): Promise<string | boolean> {
-  return HASHED.includes(f) ? sha16(String(v)) : v;
+/** 장부용 지문: 완료 여부·부모 ID 는 그대로, 나머지는 해시 */
+export async function fp(name: string, v: Value): Promise<Value> {
+  return typeof v === "boolean" || name === "parent" ? v : sha16(String(v));
 }
 
-/** 예전 장부(내용이 그대로 적힌 형식)를 지문 형식으로 바꾼다. */
+/** 예전 장부(내용이 그대로 적힌 형식)를 지문 형식으로 바꾼다. (TO-DO 초기 장부용) */
 export async function migrateLast(last: Last | null): Promise<Last | null> {
   if (!last || last.h) return last;
-  return {
-    title: (await fp("title", last.title ?? "")) as string,
-    notes: (await fp("notes", last.notes ?? "")) as string,
-    due: (await fp("due", last.due ?? "")) as string,
-    done: last.done,
-    parent: last.parent ?? "",
-    t: last.t,
-    h: 1,
-  };
+  const out: Last = { h: 1, t: last.t };
+  for (const [k, v] of Object.entries(last)) {
+    if (k === "t" || k === "h") continue;
+    out[k] = await fp(k, (v ?? "") as Value);
+  }
+  return out;
 }
 
 const iso = (ms: number) => new Date(ms).toISOString();
+const RAW_KEYS = ["title", "notes", "due", "done"] as const;
 
 export async function syncList(opts: {
   cfg: ListConfig;
@@ -108,9 +98,10 @@ export async function syncList(opts: {
   st: ListState;
   now: number;
   dryRun: boolean;
+  ctx?: Ctx;
 }): Promise<Counts> {
   const { cfg, g, n, budget, gList, dsId, st, now, dryRun } = opts;
-  const p = cfg.props;
+  const ctx: Ctx = opts.ctx ?? { stores: [] };
   const c: Counts = { linked: 0, gCreate: 0, gUpdate: 0, gDelete: 0, nCreate: 0, nUpdate: 0, nDelete: 0, deferred: 0, gSeen: 0, nSeen: 0, gFields: {}, nFields: {} };
   const bump = (m: Record<string, number>, ks: string[]) => ks.forEach((k) => (m[k] = (m[k] ?? 0) + 1));
   const can = (k: number) => budget.left() - RESERVE >= k;
@@ -118,14 +109,25 @@ export async function syncList(opts: {
   st.initialized_at ??= iso(initializedAt);
   const pairs: Record<string, Pair> = (st.pairs ??= {});
   const firstRun = !st.initialized;
+  const T = cfg.titleField;
+  const names = [...cfg.fields.map((f) => f.name), ...(cfg.parentProp ? ["parent"] : [])];
+  const dataNames = cfg.fields.map((f) => f.name);
 
   for (const pr of Object.values(pairs)) pr.last = await migrateLast(pr.last);
 
   const G = await g.listTasks(gList, now - FETCH_WINDOW);
-  const N = await n.listPages(dsId, p, now - FETCH_WINDOW);
+  const N = await n.listPages(dsId, cfg, now - FETCH_WINDOW);
   const liveG = new Map([...G].filter(([, t]) => !t.gone));
   c.gSeen = liveG.size;
   c.nSeen = N.size;
+
+  const decode = (t: GTask): Fields => cfg.codec.decode(t, ctx);
+  // 반복 항목은 'Next Due' 를 날짜로 본다
+  const nFields = (p: NPage): Fields => {
+    const f = { ...p.f };
+    if (cfg.repeat && p.repeat) f[cfg.repeat.field] = p.nextDue || f[cfg.repeat.field];
+    return f;
+  };
 
   // --- 안전장치: 진행 중인 짝이 있는데 한쪽이 통째로 비어 보이면 멈춤 ---
   const activePairs = Object.values(pairs).filter((pr) => !pr.last?.done).length;
@@ -145,24 +147,19 @@ export async function syncList(opts: {
     const lastDone = Boolean(pr.last?.done);
     let gs: "have" | "gone" | "unknown" = inG ? "have" : G.get(gid)?.gone ? "gone" : lastDone ? "unknown" : "gone";
     let ns: "have" | "gone" | "unknown" = inN ? "have" : lastDone ? "unknown" : "gone";
-    if (gs === "unknown" && ns === "have") {
-      if (!can(1)) gs = "unknown";
-      else {
-        const t = await g.getTask(gList, gid);
-        if (t && !t.gone) {
-          liveG.set(gid, t);
-          gs = "have";
-        } else gs = "gone";
-      }
+    if (gs === "unknown" && ns === "have" && can(1)) {
+      const t = await g.getTask(gList, gid);
+      if (t && !t.gone) {
+        liveG.set(gid, t);
+        gs = "have";
+      } else gs = "gone";
     }
-    if (ns === "unknown" && gs === "have") {
-      if (can(1)) {
-        const pg = await n.getPage(pr.nid, p);
-        if (pg) {
-          N.set(pg.id, pg);
-          ns = "have";
-        } else ns = "gone";
-      }
+    if (ns === "unknown" && gs === "have" && can(1)) {
+      const pg = await n.getPage(pr.nid, cfg);
+      if (pg) {
+        N.set(pg.id, pg);
+        ns = "have";
+      } else ns = "gone";
     }
     if (gs === "have" && ns === "have") continue;
     if (gs === "unknown" || ns === "unknown") {
@@ -209,13 +206,15 @@ export async function syncList(opts: {
   const mode = new Map<string, "normal" | "init" | "fromG" | "fromN">();
   if (firstRun) {
     const byTitle = new Map<string, string[]>();
-    for (const [nid, it] of N) {
-      if (!it.done && it.title && !linkedN.has(nid)) byTitle.set(it.title, [...(byTitle.get(it.title) ?? []), nid]);
+    for (const [nid, p] of N) {
+      const t = String(p.f[T] ?? "");
+      if (!p.f.done && t && !linkedN.has(nid)) byTitle.set(t, [...(byTitle.get(t) ?? []), nid]);
     }
     for (const [gid, t] of liveG) {
-      if (pairs[gid] || t.done || !t.title) continue;
-      const cands = byTitle.get(t.title);
-      const nid = cands?.shift();
+      if (pairs[gid] || t.done) continue;
+      const title = String(decode(t)[T] ?? "");
+      if (!title) continue;
+      const nid = byTitle.get(title)?.shift();
       if (nid) {
         pairs[gid] = { nid, last: null };
         linkedN.add(nid);
@@ -226,32 +225,35 @@ export async function syncList(opts: {
 
   // --- 4) 짝 없는 새 항목 → 반대쪽에 만들기 ---
   const cutoff = Math.max(initializedAt, now - RECENT_DONE_WINDOW);
-  const shouldLink = (it: Item, at: number | undefined) => Boolean(it.title) && (!it.done || (at !== undefined && at >= cutoff));
-  const nDue = (it: Item) => (it.repeat ? it.nextDue || it.due : it.due);
+  const shouldLink = (title: Value | undefined, done: boolean, at: number | undefined) =>
+    Boolean(title) && (!done || (at !== undefined && at >= cutoff));
 
   for (const [gid, t] of [...liveG]) {
-    if (pairs[gid] || !shouldLink(t, t.doneAt ?? t.updated)) continue;
+    if (pairs[gid]) continue;
+    const f = decode(t);
+    if (!shouldLink(f[T], t.done, t.doneAt ?? t.updated)) continue;
     if (!can(1)) {
       c.deferred++;
       continue;
     }
-    const v: Vals = { title: t.title, notes: t.notes, due: t.due, done: t.done };
-    const nid = dryRun ? `dry-n-${gid}` : await n.create(dsId, p, v);
-    N.set(nid, { id: nid, title: t.title, notes: t.notes, due: t.due, done: t.done, parentRaw: "", updated: now, created: now, dueRaw: t.due || null });
+    const nid = dryRun ? `dry-n-${gid}` : await n.create(dsId, cfg, f);
+    const dateRaw: Record<string, string | null> = {};
+    for (const s of cfg.fields) if (s.type === "date") dateRaw[s.name] = (f[s.name] as string) || null;
+    N.set(nid, { id: nid, f, parentRaw: "", updated: now, created: now, dateRaw });
     pairs[gid] = { nid, last: null };
     linkedN.add(nid);
     mode.set(gid, "fromG");
     c.nCreate++;
   }
-  for (const [nid, it] of [...N]) {
-    if (linkedN.has(nid) || !shouldLink(it, it.created)) continue;
+  for (const [nid, p] of [...N]) {
+    if (linkedN.has(nid) || !shouldLink(p.f[T], Boolean(p.f.done), p.created)) continue;
     if (!can(1)) {
       c.deferred++;
       continue;
     }
-    const v: Vals = { title: it.title, notes: it.notes, due: nDue(it), done: it.done };
-    const gid = dryRun ? `dry-g-${nid}` : await g.create(gList, v);
-    liveG.set(gid, { id: gid, title: it.title, notes: it.notes, due: nDue(it), done: it.done, parentRaw: "", updated: now });
+    const raw = cfg.codec.encode(nFields(p), ctx);
+    const gid = dryRun ? `dry-g-${nid}` : await g.create(gList, raw);
+    liveG.set(gid, { id: gid, ...raw, parentRaw: "", updated: now });
     pairs[gid] = { nid, last: null };
     linkedN.add(nid);
     mode.set(gid, "fromN");
@@ -280,21 +282,26 @@ export async function syncList(opts: {
     if (!gt || !nt) continue; // 오래된 완료 짝 (조회에서 빠짐) → 할 일 없음
     const last = pr.last;
     const m = mode.get(gid) ?? "normal";
-    const gv = { title: gt.title, notes: gt.notes, due: gt.due, done: gt.done, parent: gt.parentRaw && pairs[gt.parentRaw] ? gt.parentRaw : "" };
-    const top = topAncestor(nt.id);
-    const nv = { title: nt.title, notes: nt.notes, due: nDue(nt), done: nt.done, parent: top ? nToG.get(top) ?? "" : "" };
+    const gv: Fields = decode(gt);
+    const nv: Fields = nFields(nt);
+    if (cfg.parentProp) {
+      gv.parent = gt.parentRaw && pairs[gt.parentRaw] ? gt.parentRaw : "";
+      const top = topAncestor(nt.id);
+      nv.parent = top ? nToG.get(top) ?? "" : "";
+    }
     const gNewer = gt.updated > nt.updated;
+    const repeatField = cfg.repeat && nt.repeat ? cfg.repeat.field : null;
 
-    const nw: Record<Field, any> = { ...gv };
-    for (const f of FIELDS) {
-      const a = gv[f];
-      const b = nv[f];
+    const nw: Fields = {};
+    for (const f of names) {
+      const a = gv[f] ?? "";
+      const b = nv[f] ?? "";
       if (a === b) nw[f] = a;
-      else if (f === "due" && nt.repeat) nw[f] = b; // 반복 항목 날짜는 Notion 기준
+      else if (f === repeatField) nw[f] = b; // 반복 항목 날짜는 Notion 기준
       else if (m === "fromG") nw[f] = a;
       else if (m === "fromN") nw[f] = b;
       else if (m === "init") {
-        if (f === "title") nw[f] = b; // 처음 연결 시 Notion 제목으로 통일
+        if (f === T) nw[f] = b; // 처음 연결 시 Notion 제목으로 통일
         else if (a === "" || a === false || b === "" || b === false) nw[f] = a || b;
         else nw[f] = gNewer ? a : b;
       } else if (last && (await fp(f, a)) === last[f]) nw[f] = b; // Notion 쪽만 바뀜
@@ -302,42 +309,51 @@ export async function syncList(opts: {
       else nw[f] = gNewer ? a : b; // 둘 다 바뀜 → 나중에 고친 쪽
     }
 
-    const gPatch: Vals = {};
-    const nPatch: Vals = {};
-    for (const f of ["title", "notes", "due", "done"] as const) {
-      if (gv[f] !== nw[f]) (gPatch as any)[f] = nw[f];
-      if (nv[f] !== nw[f]) (nPatch as any)[f] = nw[f];
+    // 구글: 칸이 하나라도 달라졌으면 제목·세부정보를 다시 만들어서 바뀐 부분만 보냄
+    const gChanged = dataNames.filter((f) => (gv[f] ?? "") !== nw[f]);
+    const gPatch: Partial<GRaw> = {};
+    const want = cfg.codec.encode(nw, ctx);
+    if (gChanged.length) {
+      for (const k of RAW_KEYS) if (gt[k] !== want[k]) (gPatch as any)[k] = want[k];
+    } else if (gt.title !== want.title) {
+      // 내용은 같지만 구글 제목 모양만 다를 때 (예: '엔플' → '네이버', '생수!' → '생수 !') 한 번 정리
+      gPatch.title = want.title;
     }
-    if (nt.repeat) delete nPatch.due; // 반복 항목의 Notion 날짜는 건드리지 않음
-    const gParent = gv.parent !== nw.parent;
-    const nParent = nv.parent !== nw.parent;
-    const cost = (Object.keys(gPatch).length ? 1 : 0) + (Object.keys(nPatch).length ? 1 : 0) + (gParent ? 1 : 0) + (nParent ? 1 : 0);
+    const nPatch: Fields = {};
+    for (const f of dataNames) if ((nv[f] ?? "") !== nw[f] && f !== repeatField) nPatch[f] = nw[f];
+    const gParent = Boolean(cfg.parentProp) && gv.parent !== nw.parent;
+    const nParent = Boolean(cfg.parentProp) && nv.parent !== nw.parent;
+    const hasG = Object.keys(gPatch).length > 0;
+    const hasN = Object.keys(nPatch).length > 0;
+    const cost = (hasG ? 1 : 0) + (hasN ? 1 : 0) + (gParent ? 1 : 0) + (nParent ? 1 : 0);
     if (!can(cost)) {
       c.deferred++;
       continue; // 장부를 안 바꿨으니 다음 실행 때 다시 처리
     }
-    bump(c.gFields, [...Object.keys(gPatch), ...(gParent ? ["parent"] : [])]);
-    bump(c.nFields, [...Object.keys(nPatch), ...(nParent ? ["parent"] : [])]);
-    if (Object.keys(gPatch).length) {
+    if (hasG) bump(c.gFields, gChanged);
+    if (hasN) bump(c.nFields, Object.keys(nPatch));
+    if (gParent) bump(c.gFields, ["parent"]);
+    if (nParent) bump(c.nFields, ["parent"]);
+    if (hasG) {
       c.gUpdate++;
       if (!dryRun) await g.update(gList, gid, gPatch);
     }
-    if (Object.keys(nPatch).length) {
+    if (hasN) {
       c.nUpdate++;
-      if (!dryRun) await n.update(p, nt, nPatch);
+      if (!dryRun) await n.update(cfg, nt, nPatch);
     }
     if (gParent) {
       c.gUpdate++;
-      if (!dryRun) await g.move(gList, gid, nw.parent);
+      if (!dryRun) await g.move(gList, gid, String(nw.parent));
     }
     if (nParent) {
       c.nUpdate++;
-      if (!dryRun) await n.setParent(p, pr.nid, nw.parent ? pairs[nw.parent].nid : "");
+      if (!dryRun) await n.setParent(cfg, pr.nid, nw.parent ? pairs[String(nw.parent)].nid : "");
     }
 
     const newFp: Last = {};
-    for (const f of FIELDS) (newFp as any)[f] = await fp(f, nw[f]);
-    const changed = !last || FIELDS.some((f) => last[f] !== newFp[f]);
+    for (const f of names) newFp[f] = await fp(f, nw[f]);
+    const changed = !last || names.some((f) => last[f] !== newFp[f]);
     pr.last = { ...newFp, h: 1, t: changed || !last?.t ? iso(now) : last.t };
   }
 
