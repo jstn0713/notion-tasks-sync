@@ -37,9 +37,15 @@ export interface RunResult {
   error?: string;
   requests: number;
   telegram?: string;
+  configured?: string[]; // Worker 가 실제로 받은 설정값 이름 (값은 안 보냄)
 }
 
 const clean = (s: unknown) => (typeof s === "string" ? s.trim() : "");
+
+export const CONFIG_KEYS = [
+  "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "NOTION_TOKEN", "NOTION_STATE_PAGE_ID",
+  "NOTION_TODO_DS_ID", "NOTION_SHOPPING_DS_ID", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+];
 
 /**
  * allowInit: 처음 연결(짝짓기)을 해도 되는지. 5분 자동 실행은 false 라서,
@@ -48,6 +54,7 @@ const clean = (s: unknown) => (typeof s === "string" ? s.trim() : "");
 export async function runSync(env: Env, dry: boolean, now = Date.now(), fetcher: typeof fetch = fetch, allowInit = true): Promise<RunResult> {
   const budget = new Budget(REQUEST_LIMIT);
   const result: RunResult = { ok: false, dry, lists: {}, requests: 0 };
+  result.configured = CONFIG_KEYS.filter((k) => clean(env[k]));
   try {
     const need = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "NOTION_TOKEN", "NOTION_STATE_PAGE_ID"];
     const missing = need.filter((k) => !clean(env[k]));

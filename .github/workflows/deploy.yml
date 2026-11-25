@@ -146,13 +146,21 @@ jobs:
         run: |
           dry=1
           [ "$MODE" = "지금 바로 동기화" ] && dry=0
+          # GitHub 에 들어 있는 설정값 이름 (값은 안 보여요)
+          expected=""
+          for k in GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET GOOGLE_REFRESH_TOKEN NOTION_TOKEN NOTION_STATE_PAGE_ID NOTION_TODO_DS_ID NOTION_SHOPPING_DS_ID TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID; do
+            [ -n "${!k}" ] && expected="$expected $k"
+          done
+          echo "GitHub 설정값:$expected"
           # 새 버전·비밀값이 퍼질 때까지 몇 번 다시 시도
-          for i in $(seq 1 12); do
+          for i in $(seq 1 18); do
             res="$(curl -sS -X POST "$URL/run?dry=$dry" -H "x-run-secret: $RUN_SECRET" || true)"
             if echo "$res" | grep -q '"ok":true'; then
-              # 텔레그램 값을 넣었는데 '꺼짐'이면 새 비밀값이 아직 안 퍼진 것 → 조금 더 기다림
-              if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ] && echo "$res" | grep -q '"telegram":"off"' && [ "$i" -lt 12 ]; then
-                sleep 5; continue
+              # 새 비밀값이 Cloudflare 전체에 퍼지기 전의 버전이 답했을 수 있음 → 다 보일 때까지 기다림
+              missing_now=""
+              for k in $expected; do echo "$res" | grep -q "\"$k\"" || missing_now="$missing_now $k"; done
+              if [ -n "$missing_now" ] && [ "$i" -lt 18 ]; then
+                echo "아직 반영 안 된 설정값:$missing_now — 기다리는 중"; sleep 5; continue
               fi
               break
             fi
@@ -164,7 +172,8 @@ jobs:
             const lines = Object.entries(r.lists || {}).map(([k, v]) => k + ": " + v);
             if (r.error) lines.push(r.error);
             const tg = { sent: "텔레그램 연결 메시지 보냄", already: "텔레그램 알림 켜짐", off: "텔레그램 알림 꺼짐", failed: "⚠️ 텔레그램 메시지를 못 보냈어요 (TELEGRAM_CHAT_ID 확인)" }[r.telegram] || "";
-            console.log((r.dry ? "[시험 실행] " : "[동기화] ") + lines.join(" / ") + " (요청 " + r.requests + "개)" + (tg ? " · " + tg : ""));')"
+            const opt = ["NOTION_SHOPPING_DS_ID"].filter((k) => !(r.configured || []).includes(k));
+            console.log((r.dry ? "[시험 실행] " : "[동기화] ") + lines.join(" / ") + " (요청 " + r.requests + "개)" + (tg ? " · " + tg : "") + (opt.length ? " · 아직 없는 설정값: " + opt.join(", ") : ""));')"
           echo "$summary"
           if echo "$res" | grep -q '"ok":true'; then
             echo "::notice title=배포 완료::$summary"
