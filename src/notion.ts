@@ -173,6 +173,7 @@ export class Notion implements NotionApi {
   async create(dsId: string, cfg: ListConfig, vals: Fields): Promise<string> {
     const res = await request<any>(this.f, this.budget, `${API}/pages`, {
       method: "POST",
+      once: true,
       headers: this.h,
       json: { parent: { type: "data_source_id", data_source_id: dsId }, properties: propsFor(cfg, vals, null) },
     });
@@ -220,6 +221,7 @@ export class Notion implements NotionApi {
     } else {
       await request(this.f, this.budget, `${API}/blocks/${pageId}/children`, {
         method: "PATCH",
+        once: true,
         headers: this.h,
         json: { children: [{ object: "block", type: "code", code }] },
       });

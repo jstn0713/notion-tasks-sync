@@ -24,6 +24,18 @@ export interface ReqOpts {
   form?: Record<string, string>;
   ok?: number[];
   tries?: number;
+  /**
+   * 새로 만드는 요청(구글 할 일 추가, Notion 페이지 추가 등). 서버가 받았는지 알 수 없는 오류
+   * (520 같은 5xx, 연결 끊김) 뒤에 다시 보내면 같은 항목이 두 번 생길 수 있어서,
+   * '처리 안 했음'이 분명한 429·503 일 때만 다시 보낸다.
+   */
+  once?: boolean;
+}
+
+/** 잠깐 생기는 오류인지 (다시 보내면 될 가능성이 큰지) */
+export function retryable(status: number, once = false): boolean {
+  if (status === 429 || status === 503) return true;
+  return !once && status >= 500 && status <= 599; // 520~524 는 Cloudflare 와 상대 서버 사이 연결 문제
 }
 
 export type Fetcher = typeof fetch;
@@ -50,12 +62,22 @@ export async function request<T = any>(
   const method = o.method ?? "GET";
   for (let attempt = 0; attempt < tries; attempt++) {
     budget.take();
-    const r = await fetcher(u.toString(), { method, headers, body });
+    let r: Response;
+    try {
+      r = await fetcher(u.toString(), { method, headers, body });
+    } catch {
+      // 연결 자체가 끊김 (응답 없음)
+      if (!o.once && attempt < tries - 1) {
+        await new Promise((res) => setTimeout(res, 2 ** attempt * 1000));
+        continue;
+      }
+      throw new ApiError(`${method} ${u.host} 연결 실패`);
+    }
     if (ok.includes(r.status)) {
       const text = await r.text();
       return text ? (JSON.parse(text) as T) : null;
     }
-    if ([429, 500, 502, 503, 504].includes(r.status) && attempt < tries - 1) {
+    if (retryable(r.status, o.once) && attempt < tries - 1) {
       const wait = Math.min(Number(r.headers.get("retry-after")) || 2 ** attempt, 5);
       await new Promise((res) => setTimeout(res, wait * 1000));
       continue;

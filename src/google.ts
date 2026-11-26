@@ -101,7 +101,7 @@ export class Google implements GoogleApi {
   }
 
   async create(listId: string, v: Partial<GRaw>): Promise<string> {
-    const res = await request<any>(this.f, this.budget, `${API}/lists/${listId}/tasks`, { method: "POST", headers: this.h, json: body(v) });
+    const res = await request<any>(this.f, this.budget, `${API}/lists/${listId}/tasks`, { method: "POST", headers: this.h, json: body(v), once: true });
     return res.id;
   }
 
