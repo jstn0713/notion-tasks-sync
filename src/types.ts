@@ -18,6 +18,7 @@ export interface GTask extends GRaw {
   updated: number;
   doneAt?: number;
   gone?: boolean;
+  position?: string; // 목록 안 순서 (작을수록 위)
 }
 
 export interface NPage {
@@ -29,19 +30,22 @@ export interface NPage {
   dateRaw: Record<string, string | null>; // 날짜 칸의 원래 값(시간 포함 가능)
   repeat?: boolean;
   nextDue?: string;
+  stageRaw?: string; // 단계(stage) 칸의 지금 선택지 이름
 }
 
-export type NotionType = "title" | "rich_text" | "checkbox" | "date" | "select" | "number" | "url" | "stage";
+export type NotionType = "title" | "rich_text" | "checkbox" | "date" | "select" | "number" | "url" | "stage" | "stageDev";
 
 export interface FieldSpec {
   name: string; // 프로그램 안에서 쓰는 칸 이름 (장부 호환을 위해 TO-DO 는 title/notes/due/done)
   notion: string; // Notion 속성 이름
   type: NotionType;
-  // type "stage": Notion 의 단계(select) 칸을 구글의 '완료'로 본다.
-  //   단계가 idea(또는 비어 있음) = 완료 아님, 그 밖의 단계 = 완료.
-  //   구글에서 완료하면 started 로, 완료를 풀면 idea 로 바꾼다.
+  // 단계(select) 칸 하나를 두 칸으로 나눠 본다 (AI 공방).
+  //   type "stage"    → 'done': idea·dev 단계(또는 비어 있음)가 아니면 완료
+  //   type "stageDev" → 'dev' : dev 단계인지
+  //   구글에서 완료하면 later 로, 완료를 풀면 idea 또는 dev 로 바꾼다.
   idea?: string;
-  started?: string;
+  dev?: string;
+  later?: string;
 }
 
 /** 구글 제목·세부정보 ↔ 칸들 변환 */
@@ -65,6 +69,12 @@ export interface ListConfig {
   parentProp?: string; // 하위 할 일 연동 (Notion relation)
   repeat?: { frequencyProp: string; nextDueProp: string; field: string }; // 반복 항목
   storeProp?: string; // 이 select 속성의 선택지를 ctx.stores 로 읽음
+  /**
+   * 완료 아닌 동안에만 뜻이 있는 칸 (AI 공방의 'dev').
+   * 완료된 동안에는 구글 쪽 값(제목 앞 '(개발중)')이 '완료 전 단계'를 기억하고 있다가,
+   * 완료를 풀면 그 단계로 돌아간다. 이 칸이 켜지면 구글에서 목록 맨 아래로 옮긴다.
+   */
+  openOnlyField?: string;
 }
 
 export interface GoogleApi {
@@ -73,7 +83,7 @@ export interface GoogleApi {
   getTask(listId: string, id: string): Promise<GTask | null>;
   create(listId: string, raw: Partial<GRaw>): Promise<string>; // 값이 undefined 인 칸은 보내지 않음
   update(listId: string, id: string, raw: Partial<GRaw>): Promise<void>;
-  move(listId: string, id: string, parent: string): Promise<void>;
+  move(listId: string, id: string, parent: string, previous?: string): Promise<void>; // previous 바로 뒤로 (없으면 맨 위)
   remove(listId: string, id: string): Promise<void>;
 }
 

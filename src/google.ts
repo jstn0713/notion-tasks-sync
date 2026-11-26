@@ -21,6 +21,7 @@ function toItem(t: any): GTask {
     updated: ts(t.updated),
     doneAt: t.completed ? ts(t.completed) : undefined,
     gone: Boolean(t.deleted),
+    position: t.position ?? "",
   };
 }
 
@@ -109,11 +110,11 @@ export class Google implements GoogleApi {
     await request(this.f, this.budget, `${API}/lists/${listId}/tasks/${id}`, { method: "PATCH", headers: this.h, json: body(v) });
   }
 
-  async move(listId: string, id: string, parent: string): Promise<void> {
+  async move(listId: string, id: string, parent: string, previous?: string): Promise<void> {
     await request(this.f, this.budget, `${API}/lists/${listId}/tasks/${id}/move`, {
       method: "POST",
       headers: this.h,
-      query: { parent: parent || undefined },
+      query: { parent: parent || undefined, previous: previous || undefined },
     });
   }
 

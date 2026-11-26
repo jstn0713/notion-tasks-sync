@@ -18,7 +18,7 @@ export class FakeGoogle implements GoogleApi {
   budget = new Budget(10_000);
   add(title: string, kw: Partial<GTask> = {}) {
     const id = `g${seq++}`;
-    this.t.set(id, { id, title, notes: "", due: "", done: false, parentRaw: "", updated: T0 - 86400_000, ...kw });
+    this.t.set(id, { id, title, notes: "", due: "", done: false, parentRaw: "", updated: T0 - 86400_000, position: String(seq).padStart(5, "0"), ...kw });
     return id;
   }
   async findList() {
@@ -39,7 +39,7 @@ export class FakeGoogle implements GoogleApi {
     this.budget.take();
     this.calls++;
     const id = `g${seq++}`;
-    this.t.set(id, { id, title: v.title ?? "", notes: v.notes ?? "", due: v.due ?? "", done: !!v.done, parentRaw: "", updated: this.clock, doneAt: v.done ? this.clock : undefined });
+    this.t.set(id, { id, title: v.title ?? "", notes: v.notes ?? "", due: v.due ?? "", done: !!v.done, parentRaw: "", updated: this.clock, doneAt: v.done ? this.clock : undefined, position: "00000" });
     return id;
   }
   async update(_l: string, id: string, v: Partial<GRaw>) {
@@ -49,10 +49,15 @@ export class FakeGoogle implements GoogleApi {
     Object.assign(it, v, { updated: this.clock });
     if (v.done) it.doneAt = this.clock;
   }
-  async move(_l: string, id: string, parent: string) {
+  async move(_l: string, id: string, parent: string, previous?: string) {
     this.budget.take();
     this.calls++;
-    Object.assign(this.t.get(id)!, { parentRaw: parent, updated: this.clock });
+    const position = previous ? this.t.get(previous)!.position + "5" : "00000";
+    Object.assign(this.t.get(id)!, { parentRaw: parent, updated: this.clock, position });
+  }
+  /** 목록에 보이는 순서대로 (완료 안 된 것만) */
+  order() {
+    return [...this.t.values()].filter((t) => !t.done && !t.gone).sort((a, b) => a.position!.localeCompare(b.position!)).map((t) => t.title);
   }
   async remove(_l: string, id: string) {
     this.budget.take();
@@ -114,6 +119,8 @@ export class FakeNotion implements NotionApi {
         it.dateRaw[k] = val && raw && raw.length > 10 ? String(val) + raw.slice(10) : (val as string) || null;
       it.f[k] = val;
     }
+    // 실제 Notion 처럼: 완료 쪽 단계에서는 '개발 중' 표시가 없음
+    if (this.cfg.openOnlyField && it.f.done) it.f[this.cfg.openOnlyField] = false;
     it.updated = this.clock;
   }
   async setParent(_c: ListConfig, id: string, parent: string) {
@@ -408,6 +415,13 @@ describe("장바구니", () => {
 
 describe("AI 공방", () => {
   const AI = LISTS.find((l) => l.key === "ai")!;
+  // Notion 단계를 바꾸는 것처럼 (아이디어 / 개발 중 / 완료 쪽)
+  const setStage = (nid: string, st: "idea" | "dev" | "later", at: number) => {
+    Object.assign(nf(nid), { done: st === "later", dev: st === "dev" });
+    N.p.get(nid)!.updated = at;
+  };
+  const gset = (gid: string, kw: Partial<GTask>, at: number) => Object.assign(G.t.get(gid)!, kw, { updated: at, ...(kw.done ? { doneAt: at } : {}) });
+
   beforeEach(async () => {
     CFG = AI;
     G = new FakeGoogle();
@@ -415,42 +429,95 @@ describe("AI 공방", () => {
     st = {};
     ids = {};
     ids.g1 = G.add("주차 위치 기록 앱");
+    ids.g2 = G.add("기프티콘 보관함");
     ids.n1 = N.add("주차 위치 기록 앱", { f: { notes: "음성 메모도" } });
-    // 이미 개발 중·완성인 줄은 구글에 만들지 않음
-    ids.nDev = N.add("데일리 자산 기록", { f: { done: true } });
+    ids.n2 = N.add("기프티콘 보관함");
+    // 다듬는 중·완성 줄은 구글에 만들지 않음
+    ids.nLater = N.add("데일리 자산 기록", { f: { done: true } });
     await run(T0);
   });
 
-  it("처음 연결: 제목이 같은 아이디어끼리 짝, 개발 중 이상은 구글에 안 만듦", async () => {
+  it("처음 연결: 제목이 같은 아이디어끼리 짝, 다듬는 중 이상은 구글에 안 만듦", async () => {
     expect(nidOf(ids.g1)).toBe(ids.n1);
     expect(G.t.get(ids.g1)!.notes).toBe("음성 메모도");
-    expect([...G.t.values()].map((t) => t.title)).toEqual(["주차 위치 기록 앱"]);
+    expect(G.order()).toEqual(["주차 위치 기록 앱", "기프티콘 보관함"]);
   });
 
-  it("구글에 새로 적은 아이디어 → Notion 에 '아이디어'(완료 아님)로", async () => {
-    const g = G.add("기프티콘 보관함", { notes: "사진으로 등록", updated: T0 + MIN });
+  it("구글에 새로 적은 아이디어 → Notion 에 '아이디어'로", async () => {
+    const g = G.add("새 아이디어", { notes: "사진으로 등록", updated: T0 + MIN });
     await run(T0 + 5 * MIN);
-    expect(nf(nidOf(g))).toMatchObject({ title: "기프티콘 보관함", notes: "사진으로 등록", done: false });
+    expect(nf(nidOf(g))).toMatchObject({ title: "새 아이디어", notes: "사진으로 등록", done: false, dev: false });
   });
 
-  it("구글에서 완료 → Notion 개발 시작, 다시 풀면 아이디어로", async () => {
-    Object.assign(G.t.get(ids.g1)!, { done: true, doneAt: T0 + MIN, updated: T0 + MIN });
+  it("Notion 개발 중 → 구글 제목 앞 '(개발중)' + 맨 아래로, 완료는 아님", async () => {
+    setStage(ids.n1, "dev", T0 + MIN);
     await run(T0 + 5 * MIN);
-    expect(nf(ids.n1).done).toBe(true);
-    Object.assign(G.t.get(ids.g1)!, { done: false, doneAt: undefined, updated: T0 + 6 * MIN });
+    expect(G.t.get(ids.g1)).toMatchObject({ title: "(개발중) 주차 위치 기록 앱", done: false });
+    expect(G.order()).toEqual(["기프티콘 보관함", "(개발중) 주차 위치 기록 앱"]);
+    // 다시 실행해도 더 바뀌지 않음
+    G.calls = N.calls = 0;
     await run(T0 + 10 * MIN);
-    expect(nf(ids.n1).done).toBe(false);
+    expect(G.calls + N.calls).toBe(0);
+    // 아이디어로 되돌리면 '(개발중)'이 빠짐
+    setStage(ids.n1, "idea", T0 + 11 * MIN);
+    await run(T0 + 15 * MIN);
+    expect(G.t.get(ids.g1)!.title).toBe("주차 위치 기록 앱");
   });
 
-  it("Notion 에서 단계를 올리면 구글에서는 완료로 숨김", async () => {
-    nf(ids.n1).done = true;
-    N.p.get(ids.n1)!.updated = T0 + MIN;
+  it("구글 제목에 '(개발중)'을 직접 붙이면 Notion 도 개발 중 (띄어쓰기 달라도)", async () => {
+    gset(ids.g2, { title: "(개발 중)기프티콘 보관함" }, T0 + MIN);
     await run(T0 + 5 * MIN);
+    expect(nf(ids.n2)).toMatchObject({ title: "기프티콘 보관함", dev: true, done: false });
+    expect(G.t.get(ids.g2)!.title).toBe("(개발중) 기프티콘 보관함"); // 모양 정리
+    expect(G.order().at(-1)).toBe("(개발중) 기프티콘 보관함");
+  });
+
+  it("구글 완료 → 다듬는 중, 완료를 풀면 완료 전 단계로 (개발 중이었으면 개발 중)", async () => {
+    setStage(ids.n1, "dev", T0 + MIN);
+    await run(T0 + 5 * MIN);
+    gset(ids.g1, { done: true }, T0 + 6 * MIN);
+    await run(T0 + 10 * MIN);
+    expect(nf(ids.n1)).toMatchObject({ done: true, dev: false });
+    G.calls = N.calls = 0;
+    await run(T0 + 15 * MIN);
+    expect(G.calls + N.calls).toBe(0);
+    gset(ids.g1, { done: false, doneAt: undefined }, T0 + 16 * MIN);
+    await run(T0 + 20 * MIN);
+    expect(nf(ids.n1)).toMatchObject({ done: false, dev: true });
+    expect(G.t.get(ids.g1)!.title).toBe("(개발중) 주차 위치 기록 앱");
+  });
+
+  it("아이디어에서 바로 완료했다가 풀면 아이디어로", async () => {
+    gset(ids.g2, { done: true }, T0 + MIN);
+    await run(T0 + 5 * MIN);
+    expect(nf(ids.n2).done).toBe(true);
+    gset(ids.g2, { done: false, doneAt: undefined }, T0 + 6 * MIN);
+    await run(T0 + 10 * MIN);
+    expect(nf(ids.n2)).toMatchObject({ done: false, dev: false });
+  });
+
+  it("Notion 개발 중 → 다듬는 중이면 구글 완료, 다시 개발 중으로 돌리면 구글도 '(개발중)'으로", async () => {
+    setStage(ids.n1, "dev", T0 + MIN);
+    await run(T0 + 5 * MIN);
+    setStage(ids.n1, "later", T0 + 6 * MIN);
+    await run(T0 + 10 * MIN);
     expect(G.t.get(ids.g1)!.done).toBe(true);
+    setStage(ids.n1, "dev", T0 + 11 * MIN);
+    await run(T0 + 15 * MIN);
+    expect(G.t.get(ids.g1)).toMatchObject({ done: false, title: "(개발중) 주차 위치 기록 앱" });
+    expect(G.order().at(-1)).toBe("(개발중) 주차 위치 기록 앱");
+  });
+
+  it("Notion 에 개발 중인 줄을 새로 넣으면 구글에 '(개발중)'으로 맨 아래에", async () => {
+    const n = N.add("새 프로젝트", { f: { dev: true }, created: T0 + MIN, updated: T0 + MIN });
+    await run(T0 + 5 * MIN);
+    const g = gidOf(n);
+    expect(G.t.get(g)).toMatchObject({ title: "(개발중) 새 프로젝트", done: false });
+    expect(G.order().at(-1)).toBe("(개발중) 새 프로젝트");
   });
 
   it("구글 날짜는 연동하지 않고 그대로 둠", async () => {
-    Object.assign(G.t.get(ids.g1)!, { due: "2026-12-01", updated: T0 + MIN });
+    gset(ids.g1, { due: "2026-12-01" }, T0 + MIN);
     nf(ids.n1).notes = "바뀐 메모";
     N.p.get(ids.n1)!.updated = T0 + 2 * MIN;
     await run(T0 + 5 * MIN);

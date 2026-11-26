@@ -37,7 +37,10 @@ export const LISTS: ListConfig[] = [
     ],
   },
   {
-    // AI 공방: 구글에는 '💡 아이디어' 단계만 보인다. 구글 완료 = '🛠 개발 중' 시작.
+    // AI 공방 (사용자 결정 2026-11-26)
+    //   💡 아이디어 → 구글에 그대로 / 🛠 개발 중 → 구글 제목 앞 '(개발중)' + 목록 맨 아래
+    //   🧪 다듬는 중·✅ 완성·⏸ 보류 → 구글 완료. 구글에서 완료하면 🧪 다듬는 중,
+    //   완료를 풀면 완료 전 단계로. 구글 제목에 '(개발중)'을 붙이거나 지워도 단계가 바뀐다.
     key: "ai",
     googleListTitle: "AI로 만들 것들",
     notionDsEnv: "NOTION_AI_DS_ID",
@@ -46,7 +49,9 @@ export const LISTS: ListConfig[] = [
     fields: [
       { name: "title", notion: "이름", type: "title" },
       { name: "notes", notion: "메모", type: "rich_text" },
-      { name: "done", notion: "단계", type: "stage", idea: "💡 아이디어", started: "🛠 개발 중" },
+      { name: "done", notion: "단계", type: "stage", idea: "💡 아이디어", dev: "🛠 개발 중", later: "🧪 다듬는 중" },
+      { name: "dev", notion: "단계", type: "stageDev" },
     ],
+    openOnlyField: "dev",
   },
 ];

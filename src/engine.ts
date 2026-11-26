@@ -47,7 +47,7 @@ export interface Counts {
 }
 
 const FIELD_KO: Record<string, string> = {
-  title: "제목", notes: "메모", due: "날짜", done: "완료", parent: "하위",
+  title: "제목", notes: "메모", due: "날짜", done: "완료", parent: "하위", dev: "개발중",
   item: "품목", store: "구매처", qty: "수량", urgent: "급함", memo: "메모", link: "링크",
 };
 const fieldsText = (m: Record<string, number>) => {
@@ -308,6 +308,16 @@ export async function syncList(opts: {
       else if (last && (await fp(f, b)) === last[f]) nw[f] = a; // 구글 쪽만 바뀜
       else nw[f] = gNewer ? a : b; // 둘 다 바뀜 → 나중에 고친 쪽
     }
+    // 완료 아닌 동안에만 뜻이 있는 칸: 완료된 쪽의 값은 믿지 않는다
+    //  - 완료 중이거나 Notion 이 완료 쪽 단계면 → 구글 제목이 기억하는 '완료 전 단계'
+    //  - 구글만 완료(곧 풀리는 중)면 → Notion 값
+    const oo = cfg.openOnlyField;
+    if (oo) {
+      if (nw.done || nv.done) nw[oo] = gv[oo] ?? false;
+      else if (gv.done) nw[oo] = nv[oo] ?? false;
+    }
+    // 새로 '개발 중'이 되면 구글 목록 맨 아래로
+    const toBottom = Boolean(oo && nw[oo] && !nw.done && !(last && last[oo] === true && !last.done));
 
     // 구글: 칸이 하나라도 달라졌으면 제목·세부정보를 다시 만들어서 바뀐 부분만 보냄
     const gChanged = dataNames.filter((f) => (gv[f] ?? "") !== nw[f]);
@@ -320,12 +330,15 @@ export async function syncList(opts: {
       gPatch.title = want.title;
     }
     const nPatch: Fields = {};
-    for (const f of dataNames) if ((nv[f] ?? "") !== nw[f] && f !== repeatField) nPatch[f] = nw[f];
+    for (const f of dataNames) {
+      if (f === oo && nw.done) continue; // 완료 쪽 단계에서는 Notion 에 적을 수 없는 값
+      if ((nv[f] ?? "") !== nw[f] && f !== repeatField) nPatch[f] = nw[f];
+    }
     const gParent = Boolean(cfg.parentProp) && gv.parent !== nw.parent;
     const nParent = Boolean(cfg.parentProp) && nv.parent !== nw.parent;
     const hasG = Object.keys(gPatch).length > 0;
     const hasN = Object.keys(nPatch).length > 0;
-    const cost = (hasG ? 1 : 0) + (hasN ? 1 : 0) + (gParent ? 1 : 0) + (nParent ? 1 : 0);
+    const cost = (hasG ? 1 : 0) + (hasN ? 1 : 0) + (gParent ? 1 : 0) + (nParent ? 1 : 0) + (toBottom ? 1 : 0);
     if (!can(cost)) {
       c.deferred++;
       continue; // 장부를 안 바꿨으니 다음 실행 때 다시 처리
@@ -349,6 +362,14 @@ export async function syncList(opts: {
     if (nParent) {
       c.nUpdate++;
       if (!dryRun) await n.setParent(cfg, pr.nid, nw.parent ? pairs[String(nw.parent)].nid : "");
+    }
+    if (toBottom) {
+      const others = [...liveG.values()].filter((t) => t.id !== gid && !t.done && !t.parentRaw);
+      const lastTask = others.sort((x, y) => (x.position ?? "").localeCompare(y.position ?? "")).pop();
+      if (!dryRun) await g.move(gList, gid, "", lastTask?.id);
+      gt.position = (lastTask?.position ?? "") + "~"; // 이번 실행 안에서도 맨 아래로 보이게
+      if (!hasG) c.gUpdate++;
+      bump(c.gFields, ["순서"]);
     }
 
     const newFp: Last = {};

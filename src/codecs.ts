@@ -1,10 +1,22 @@
 // 구글 제목·세부정보 ↔ Notion 칸 변환 규칙.
 import type { Codec, Ctx, Fields, GRaw } from "./types";
 
-/** AI 공방: 제목·세부정보·완료만 (날짜는 연동하지 않아서 구글 날짜는 그대로 둠) */
+/**
+ * AI 공방: 제목·세부정보·완료 + 제목 앞 '(개발중)' (날짜는 연동하지 않아서 구글 날짜는 그대로 둠)
+ *   "(개발중) 주차 앱" ↔ 이름 '주차 앱', 단계 🛠 개발 중
+ */
+export const DEV_PREFIX = "(개발중) ";
+const DEV_RE = /^\s*[(\[（]\s*개발\s*중\s*[)\]）]\s*/;
 export const ideaCodec: Codec = {
-  decode: (t) => ({ title: t.title, notes: t.notes, done: t.done }),
-  encode: (f) => ({ title: String(f.title ?? ""), notes: String(f.notes ?? ""), done: Boolean(f.done) }),
+  decode: (t) => {
+    const dev = DEV_RE.test(t.title);
+    return { title: dev ? t.title.replace(DEV_RE, "").trim() : t.title, notes: t.notes, done: t.done, dev };
+  },
+  encode: (f) => ({
+    title: (f.dev ? DEV_PREFIX : "") + String(f.title ?? ""),
+    notes: String(f.notes ?? ""),
+    done: Boolean(f.done),
+  }),
 };
 
 /** TO-DO: 그대로 옮김 */

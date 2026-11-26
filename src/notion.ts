@@ -20,7 +20,12 @@ const doneSpec = (cfg: ListConfig) => cfg.fields.find((f) => f.name === "done")!
 /** 진행 중(완료 아님) 항목만 고르는 Notion 조회 조건 */
 function notDoneFilters(cfg: ListConfig): any[] {
   const d = doneSpec(cfg);
-  if (d.type === "stage") return [{ property: d.notion, select: { equals: d.idea } }, { property: d.notion, select: { is_empty: true } }];
+  if (d.type === "stage")
+    return [
+      { property: d.notion, select: { equals: d.idea } },
+      { property: d.notion, select: { equals: d.dev } },
+      { property: d.notion, select: { is_empty: true } },
+    ];
   return [{ property: d.notion, checkbox: { equals: false } }];
 }
 
@@ -29,6 +34,7 @@ export function pageToItem(pg: any, cfg: ListConfig): NPage | null {
   const pr = pg.properties ?? {};
   const f: Fields = {};
   const dateRaw: Record<string, string | null> = {};
+  let stageRaw: string | undefined;
   for (const spec of cfg.fields) {
     const p = pr[spec.notion];
     switch (spec.type) {
@@ -56,9 +62,13 @@ export function pageToItem(pg: any, cfg: ListConfig): NPage | null {
         break;
       case "stage": {
         const s = p?.select?.name ?? "";
-        f[spec.name] = s !== "" && s !== spec.idea;
+        stageRaw = s;
+        f[spec.name] = s !== "" && s !== spec.idea && s !== spec.dev;
         break;
       }
+      case "stageDev":
+        f[spec.name] = (p?.select?.name ?? "") === stageSpec(cfg)?.dev;
+        break;
     }
   }
   let repeat = false;
@@ -79,7 +89,21 @@ export function pageToItem(pg: any, cfg: ListConfig): NPage | null {
     dateRaw,
     repeat,
     nextDue,
+    stageRaw,
   };
+}
+
+const stageSpec = (cfg: ListConfig) => cfg.fields.find((f) => f.type === "stage");
+
+/** 완료·개발 중 여부 → 단계 선택지. 이미 '완료 쪽' 단계(다듬는 중·완성·보류)면 그대로 둔다. */
+function stageFor(cfg: ListConfig, vals: Fields, old: NPage | null): string | null {
+  const s = stageSpec(cfg)!;
+  const dev = cfg.fields.find((f) => f.type === "stageDev");
+  const merged = { ...(old?.f ?? {}), ...vals };
+  const cur = old?.stageRaw ?? "";
+  const curDone = cur !== "" && cur !== s.idea && cur !== s.dev;
+  const want = merged[s.name] ? (curDone ? cur : s.later!) : dev && merged[dev.name] ? s.dev! : s.idea!;
+  return old && want === cur ? null : want;
 }
 
 export function propsFor(cfg: ListConfig, vals: Fields, old: NPage | null): Record<string, unknown> {
@@ -117,8 +141,11 @@ export function propsFor(cfg: ListConfig, vals: Fields, old: NPage | null): Reco
         out[spec.notion] = { url: s || null };
         break;
       case "stage":
-        out[spec.notion] = { select: { name: v ? spec.started : spec.idea } };
+      case "stageDev": {
+        const name = stageFor(cfg, vals, old);
+        if (name) out[spec.notion] = { select: { name } };
         break;
+      }
     }
   }
   return out;
