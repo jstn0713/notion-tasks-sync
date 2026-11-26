@@ -31,12 +31,17 @@ export interface NPage {
   nextDue?: string;
 }
 
-export type NotionType = "title" | "rich_text" | "checkbox" | "date" | "select" | "number" | "url";
+export type NotionType = "title" | "rich_text" | "checkbox" | "date" | "select" | "number" | "url" | "stage";
 
 export interface FieldSpec {
   name: string; // 프로그램 안에서 쓰는 칸 이름 (장부 호환을 위해 TO-DO 는 title/notes/due/done)
   notion: string; // Notion 속성 이름
   type: NotionType;
+  // type "stage": Notion 의 단계(select) 칸을 구글의 '완료'로 본다.
+  //   단계가 idea(또는 비어 있음) = 완료 아님, 그 밖의 단계 = 완료.
+  //   구글에서 완료하면 started 로, 완료를 풀면 idea 로 바꾼다.
+  idea?: string;
+  started?: string;
 }
 
 /** 구글 제목·세부정보 ↔ 칸들 변환 */
@@ -45,14 +50,16 @@ export interface Ctx {
 }
 export interface Codec {
   decode(t: GRaw, ctx: Ctx): Fields;
-  encode(f: Fields, ctx: Ctx): GRaw;
+  /** 값이 undefined 인 구글 칸(예: 날짜를 연동하지 않는 목록의 due)은 건드리지 않는다 */
+  encode(f: Fields, ctx: Ctx): GRawOut;
 }
+export type GRawOut = { title: string; notes: string; done: boolean; due?: string };
 
 export interface ListConfig {
   key: string;
   googleListTitle: string;
   notionDsEnv: string;
-  fields: FieldSpec[]; // 'done'(checkbox) 칸은 꼭 있어야 함
+  fields: FieldSpec[]; // 'done'(checkbox 또는 stage) 칸은 꼭 있어야 함
   titleField: string; // 짝짓기·빈 줄 판단에 쓰는 칸
   codec: Codec;
   parentProp?: string; // 하위 할 일 연동 (Notion relation)
@@ -64,7 +71,7 @@ export interface GoogleApi {
   findList(title: string): Promise<string>;
   listTasks(listId: string, completedMin: number): Promise<Map<string, GTask>>;
   getTask(listId: string, id: string): Promise<GTask | null>;
-  create(listId: string, raw: Partial<GRaw>): Promise<string>;
+  create(listId: string, raw: Partial<GRaw>): Promise<string>; // 값이 undefined 인 칸은 보내지 않음
   update(listId: string, id: string, raw: Partial<GRaw>): Promise<void>;
   move(listId: string, id: string, parent: string): Promise<void>;
   remove(listId: string, id: string): Promise<void>;

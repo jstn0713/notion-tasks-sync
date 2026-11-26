@@ -253,7 +253,7 @@ export async function syncList(opts: {
     }
     const raw = cfg.codec.encode(nFields(p), ctx);
     const gid = dryRun ? `dry-g-${nid}` : await g.create(gList, raw);
-    liveG.set(gid, { id: gid, ...raw, parentRaw: "", updated: now });
+    liveG.set(gid, { id: gid, due: "", ...raw, parentRaw: "", updated: now });
     pairs[gid] = { nid, last: null };
     linkedN.add(nid);
     mode.set(gid, "fromN");
@@ -314,7 +314,7 @@ export async function syncList(opts: {
     const gPatch: Partial<GRaw> = {};
     const want = cfg.codec.encode(nw, ctx);
     if (gChanged.length) {
-      for (const k of RAW_KEYS) if (gt[k] !== want[k]) (gPatch as any)[k] = want[k];
+      for (const k of RAW_KEYS) if (want[k] !== undefined && gt[k] !== want[k]) (gPatch as any)[k] = want[k];
     } else if (gt.title !== want.title) {
       // 내용은 같지만 구글 제목 모양만 다를 때 (예: '엔플' → '네이버', '생수!' → '생수 !') 한 번 정리
       gPatch.title = want.title;

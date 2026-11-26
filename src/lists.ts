@@ -1,5 +1,5 @@
 // 연결할 목록들. 새 목록은 여기에 추가한다.
-import { plainCodec, shoppingCodec } from "./codecs";
+import { ideaCodec, plainCodec, shoppingCodec } from "./codecs";
 import type { ListConfig } from "./types";
 
 export const LISTS: ListConfig[] = [
@@ -34,6 +34,19 @@ export const LISTS: ListConfig[] = [
       { name: "link", notion: "링크", type: "url" },
       { name: "due", notion: "살 날짜", type: "date" },
       { name: "done", notion: "구매완료", type: "checkbox" },
+    ],
+  },
+  {
+    // AI 공방: 구글에는 '💡 아이디어' 단계만 보인다. 구글 완료 = '🛠 개발 중' 시작.
+    key: "ai",
+    googleListTitle: "AI로 만들 것들",
+    notionDsEnv: "NOTION_AI_DS_ID",
+    titleField: "title",
+    codec: ideaCodec,
+    fields: [
+      { name: "title", notion: "이름", type: "title" },
+      { name: "notes", notion: "메모", type: "rich_text" },
+      { name: "done", notion: "단계", type: "stage", idea: "💡 아이디어", started: "🛠 개발 중" },
     ],
   },
 ];

@@ -1,6 +1,7 @@
 // 장바구니 제목·세부정보 변환 규칙
 import { describe, expect, it } from "vitest";
 import { shoppingCodec } from "../src/codecs";
+import type { GRaw } from "../src/types";
 
 const ctx = { stores: ["쿠팡", "네이버", "다이소", "마트", "약국", "당근"] };
 const dec = (title: string, notes = "") => shoppingCodec.decode({ title, notes, due: "", done: false }, ctx);
@@ -54,7 +55,7 @@ describe("https:// 없이 적은 주소", () => {
   });
   it("Notion 링크 'www.…' → 구글 → 다시 읽어도 그대로 (왕복)", () => {
     const f = { store: "쿠팡", item: "신발 얼룩 지우개", qty: "2", urgent: true, memo: "검정색", link: "www.coupang.com", due: "", done: false };
-    expect(shoppingCodec.decode(shoppingCodec.encode(f, ctx), ctx)).toEqual(f);
+    expect(shoppingCodec.decode(shoppingCodec.encode(f, ctx) as GRaw, ctx)).toEqual(f);
   });
 });
 
@@ -70,6 +71,6 @@ describe("장바구니 제목 만들기", () => {
   });
   it("만들고 다시 읽으면 같은 값 (왕복)", () => {
     const f = { store: "네이버", item: "기저귀 대형", qty: "2", urgent: false, memo: "", link: "https://naver.me/abc", due: "2026-11-30", done: false };
-    expect(shoppingCodec.decode(shoppingCodec.encode(f, ctx), ctx)).toEqual(f);
+    expect(shoppingCodec.decode(shoppingCodec.encode(f, ctx) as GRaw, ctx)).toEqual(f);
   });
 });

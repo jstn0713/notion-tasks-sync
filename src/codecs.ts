@@ -1,6 +1,12 @@
 // 구글 제목·세부정보 ↔ Notion 칸 변환 규칙.
 import type { Codec, Ctx, Fields, GRaw } from "./types";
 
+/** AI 공방: 제목·세부정보·완료만 (날짜는 연동하지 않아서 구글 날짜는 그대로 둠) */
+export const ideaCodec: Codec = {
+  decode: (t) => ({ title: t.title, notes: t.notes, done: t.done }),
+  encode: (f) => ({ title: String(f.title ?? ""), notes: String(f.notes ?? ""), done: Boolean(f.done) }),
+};
+
 /** TO-DO: 그대로 옮김 */
 export const plainCodec: Codec = {
   decode: (t) => ({ title: t.title, notes: t.notes, due: t.due, done: t.done }),

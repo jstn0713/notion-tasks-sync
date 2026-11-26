@@ -15,7 +15,14 @@ export function rich(text: string): any[] {
   return out;
 }
 
-const doneProp = (cfg: ListConfig) => cfg.fields.find((f) => f.name === "done")!.notion;
+const doneSpec = (cfg: ListConfig) => cfg.fields.find((f) => f.name === "done")!;
+
+/** 진행 중(완료 아님) 항목만 고르는 Notion 조회 조건 */
+function notDoneFilters(cfg: ListConfig): any[] {
+  const d = doneSpec(cfg);
+  if (d.type === "stage") return [{ property: d.notion, select: { equals: d.idea } }, { property: d.notion, select: { is_empty: true } }];
+  return [{ property: d.notion, checkbox: { equals: false } }];
+}
 
 export function pageToItem(pg: any, cfg: ListConfig): NPage | null {
   if (pg.in_trash || pg.archived) return null;
@@ -47,6 +54,11 @@ export function pageToItem(pg: any, cfg: ListConfig): NPage | null {
       case "url":
         f[spec.name] = (p?.url ?? "").trim();
         break;
+      case "stage": {
+        const s = p?.select?.name ?? "";
+        f[spec.name] = s !== "" && s !== spec.idea;
+        break;
+      }
     }
   }
   let repeat = false;
@@ -104,6 +116,9 @@ export function propsFor(cfg: ListConfig, vals: Fields, old: NPage | null): Reco
       case "url":
         out[spec.notion] = { url: s || null };
         break;
+      case "stage":
+        out[spec.notion] = { select: { name: v ? spec.started : spec.idea } };
+        break;
     }
   }
   return out;
@@ -134,7 +149,7 @@ export class Notion implements NotionApi {
           // 진행 중 항목 + 최근에 고친 항목만 (오래전에 완료된 항목은 빼서 요청 수 절약)
           filter: {
             or: [
-              { property: doneProp(cfg), checkbox: { equals: false } },
+              ...notDoneFilters(cfg),
               { timestamp: "last_edited_time", last_edited_time: { on_or_after: new Date(editedSince).toISOString() } },
             ],
           },

@@ -405,3 +405,58 @@ describe("장바구니", () => {
     for (const w of ["물티슈", "신발", "coupang", "다이소"]) expect(blob).not.toContain(w);
   });
 });
+
+describe("AI 공방", () => {
+  const AI = LISTS.find((l) => l.key === "ai")!;
+  beforeEach(async () => {
+    CFG = AI;
+    G = new FakeGoogle();
+    N = new FakeNotion(AI);
+    st = {};
+    ids = {};
+    ids.g1 = G.add("주차 위치 기록 앱");
+    ids.n1 = N.add("주차 위치 기록 앱", { f: { notes: "음성 메모도" } });
+    // 이미 개발 중·완성인 줄은 구글에 만들지 않음
+    ids.nDev = N.add("데일리 자산 기록", { f: { done: true } });
+    await run(T0);
+  });
+
+  it("처음 연결: 제목이 같은 아이디어끼리 짝, 개발 중 이상은 구글에 안 만듦", async () => {
+    expect(nidOf(ids.g1)).toBe(ids.n1);
+    expect(G.t.get(ids.g1)!.notes).toBe("음성 메모도");
+    expect([...G.t.values()].map((t) => t.title)).toEqual(["주차 위치 기록 앱"]);
+  });
+
+  it("구글에 새로 적은 아이디어 → Notion 에 '아이디어'(완료 아님)로", async () => {
+    const g = G.add("기프티콘 보관함", { notes: "사진으로 등록", updated: T0 + MIN });
+    await run(T0 + 5 * MIN);
+    expect(nf(nidOf(g))).toMatchObject({ title: "기프티콘 보관함", notes: "사진으로 등록", done: false });
+  });
+
+  it("구글에서 완료 → Notion 개발 시작, 다시 풀면 아이디어로", async () => {
+    Object.assign(G.t.get(ids.g1)!, { done: true, doneAt: T0 + MIN, updated: T0 + MIN });
+    await run(T0 + 5 * MIN);
+    expect(nf(ids.n1).done).toBe(true);
+    Object.assign(G.t.get(ids.g1)!, { done: false, doneAt: undefined, updated: T0 + 6 * MIN });
+    await run(T0 + 10 * MIN);
+    expect(nf(ids.n1).done).toBe(false);
+  });
+
+  it("Notion 에서 단계를 올리면 구글에서는 완료로 숨김", async () => {
+    nf(ids.n1).done = true;
+    N.p.get(ids.n1)!.updated = T0 + MIN;
+    await run(T0 + 5 * MIN);
+    expect(G.t.get(ids.g1)!.done).toBe(true);
+  });
+
+  it("구글 날짜는 연동하지 않고 그대로 둠", async () => {
+    Object.assign(G.t.get(ids.g1)!, { due: "2026-12-01", updated: T0 + MIN });
+    nf(ids.n1).notes = "바뀐 메모";
+    N.p.get(ids.n1)!.updated = T0 + 2 * MIN;
+    await run(T0 + 5 * MIN);
+    expect(G.t.get(ids.g1)).toMatchObject({ notes: "바뀐 메모", due: "2026-12-01" });
+    G.calls = N.calls = 0;
+    await run(T0 + 10 * MIN);
+    expect(G.calls + N.calls).toBe(0);
+  });
+});

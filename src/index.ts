@@ -21,6 +21,7 @@ export interface Env {
   NOTION_STATE_PAGE_ID?: string;
   NOTION_TODO_DS_ID?: string;
   NOTION_SHOPPING_DS_ID?: string;
+  NOTION_AI_DS_ID?: string;
   RUN_SECRET?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_CHAT_ID?: string;
@@ -44,7 +45,7 @@ const clean = (s: unknown) => (typeof s === "string" ? s.trim() : "");
 
 export const CONFIG_KEYS = [
   "GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "NOTION_TOKEN", "NOTION_STATE_PAGE_ID",
-  "NOTION_TODO_DS_ID", "NOTION_SHOPPING_DS_ID", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+  "NOTION_TODO_DS_ID", "NOTION_SHOPPING_DS_ID", "NOTION_AI_DS_ID", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
 ];
 
 /**
