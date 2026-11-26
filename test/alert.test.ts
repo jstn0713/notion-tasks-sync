@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanChat, cleanToken, errorKind, reportFailure, reportSuccess, welcomeOnce } from "../src/alert";
+import { cleanChat, cleanToken, errorKind, isTransient, reportFailure, reportSuccess, welcomeOnce } from "../src/alert";
 
 class FakeKV {
   m = new Map<string, string>();
@@ -85,5 +85,30 @@ describe("텔레그램 실패 알림", () => {
     const { sent, f, env } = setup();
     await reportFailure(env, "❌ PATCH api.notion.com 실패: HTTP 400 validation_error", T0, f);
     expect(sent[0]).toContain("validation_error");
+  });
+
+  it("잠깐 끊기는 오류(520 등)는 연속 3번 실패해야 알림", async () => {
+    const { sent, f, env } = setup();
+    const e = "❌ GET tasks.googleapis.com 실패: HTTP 520";
+    expect(isTransient(e)).toBe(true);
+    await reportFailure(env, e, T0, f);
+    await reportSuccess(env, T0 + 5 * 60_000, f); // 다음 실행에 풀림 → 아무 알림 없음
+    expect(sent).toHaveLength(0);
+    await reportFailure(env, e, T0 + 10 * 60_000, f);
+    await reportFailure(env, e, T0 + 15 * 60_000, f);
+    expect(sent).toHaveLength(0);
+    await reportFailure(env, e, T0 + 20 * 60_000, f);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("HTTP 520");
+    await reportSuccess(env, T0 + 25 * 60_000, f);
+    expect(sent[1]).toContain("11/25 23:10부터"); // 첫 실패 시각
+  });
+
+  it("비밀번호·설정 문제나 안전장치 멈춤은 바로 알림", async () => {
+    const { sent, f, env } = setup();
+    expect(isTransient("❌ POST oauth2.googleapis.com 실패: HTTP 400 invalid_grant")).toBe(false);
+    expect(isTransient("⛔ 안전장치로 멈춤: 한쪽 목록이 비어 보여서 멈춤")).toBe(false);
+    await reportFailure(env, "⛔ 안전장치로 멈춤: 한쪽 목록이 비어 보여서 멈춤", T0, f);
+    expect(sent).toHaveLength(1);
   });
 });
