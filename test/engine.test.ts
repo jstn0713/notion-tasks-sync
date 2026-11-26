@@ -370,6 +370,27 @@ describe("장바구니", () => {
     expect(G.t.get(ids.g1)!.done).toBe(true);
   });
 
+  it("https:// 없는 Notion 링크가 메모로 넘어가지 않음 (예전에 꼬인 항목도 바로잡힘)", async () => {
+    // 이번 버그로 꼬인 상태 재현: Notion 링크 비고 메모에 주소, 구글 세부정보도 같은 글자
+    Object.assign(nf(ids.n1), { memo: "검정색\nwww.coupang.com", link: "" });
+    N.p.get(ids.n1)!.updated = T0 + MIN;
+    await run(T0 + 5 * MIN);
+    expect(G.t.get(ids.g1)!.notes).toBe("검정색\nwww.coupang.com");
+    await run(T0 + 10 * MIN);
+    expect(nf(ids.n1)).toMatchObject({ memo: "검정색", link: "www.coupang.com" });
+    // 그 뒤로는 더 바뀌지 않음
+    G.calls = N.calls = 0;
+    await run(T0 + 15 * MIN);
+    expect(G.calls + N.calls).toBe(0);
+    // Notion 에서 링크를 새로 넣어도 링크 칸에 그대로 남음
+    Object.assign(nf(ids.n1), { link: "www.naver.com" });
+    N.p.get(ids.n1)!.updated = T0 + 16 * MIN;
+    await run(T0 + 20 * MIN);
+    await run(T0 + 25 * MIN);
+    expect(nf(ids.n1)).toMatchObject({ memo: "검정색", link: "www.naver.com" });
+    expect(G.t.get(ids.g1)!.notes).toBe("검정색\nwww.naver.com");
+  });
+
   it("Notion에 새로 추가한 구매처도 다음 실행부터 인식", async () => {
     N.stores.push("올리브영");
     const g = G.add("올리브영 선크림", { updated: T0 + MIN });

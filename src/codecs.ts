@@ -29,7 +29,10 @@ export function findStore(word: string, stores: string[]): string {
   return "";
 }
 
-const URL_RE = /https?:\/\/[^\s<>"']+/;
+// 주소로 보는 것: https://… / www.… / 'coupang.com', 'naver.me/abc' 처럼 알려진 끝(.com 등)이 붙은 것
+// (https:// 없이 적은 주소도 알아보기 위해. 적은 모양 그대로 링크 칸에 넣는다)
+const URL_RE =
+  /(?:https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|(?<![\w@.-])(?:[a-z0-9-]+\.)+(?:com|net|org|kr|co\.kr|me|io|ly|gl|app|shop|store|link|page|to)(?:\/[^\s<>"']*)?(?![\w.-]))/i;
 
 export const shoppingCodec: Codec = {
   decode(t: GRaw, ctx: Ctx): Fields {

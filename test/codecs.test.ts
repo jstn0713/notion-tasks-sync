@@ -40,6 +40,24 @@ describe("장바구니 제목 읽기", () => {
   });
 });
 
+describe("https:// 없이 적은 주소", () => {
+  it("www.… / coupang.com/… / naver.me/… 도 링크로", () => {
+    expect(dec("쿠팡 생수", "검정색\nwww.coupang.com")).toMatchObject({ memo: "검정색", link: "www.coupang.com" });
+    expect(dec("쿠팡 생수", "coupang.com/vp/products/123")).toMatchObject({ memo: "", link: "coupang.com/vp/products/123" });
+    expect(dec("쿠팡 생수", "naver.me/xYz 이거")).toMatchObject({ memo: "이거", link: "naver.me/xYz" });
+    expect(dec("쿠팡 생수", "link.coupang.com/a/abc")).toMatchObject({ link: "link.coupang.com/a/abc" });
+  });
+  it("주소가 아닌 글자는 그대로 메모", () => {
+    expect(dec("마트 생수", "1.5L 6개 묶음")).toMatchObject({ memo: "1.5L 6개 묶음", link: "" });
+    expect(dec("마트 생수", "a@b.com 에게 물어보기")).toMatchObject({ link: "" });
+    expect(dec("마트 생수", "v2.0 버전")).toMatchObject({ link: "" });
+  });
+  it("Notion 링크 'www.…' → 구글 → 다시 읽어도 그대로 (왕복)", () => {
+    const f = { store: "쿠팡", item: "신발 얼룩 지우개", qty: "2", urgent: true, memo: "검정색", link: "www.coupang.com", due: "", done: false };
+    expect(shoppingCodec.decode(shoppingCodec.encode(f, ctx), ctx)).toEqual(f);
+  });
+});
+
 describe("장바구니 제목 만들기", () => {
   it("칸 → 구글 제목·세부정보", () => {
     expect(shoppingCodec.encode({ store: "다이소", item: "물티슈", qty: "3", urgent: true, memo: "두꺼운 거", link: "https://a.b/c", due: "", done: false }, ctx)).toEqual({
